@@ -81,7 +81,8 @@
 //!   loads and per-lane rows), so tables are never copied per draw.
 //! * **Rectangle lists** ([`rectangle_gs`]): a geometry shader made from a
 //!   vertex shader's outputs completes each rectangle with its fourth
-//!   corner `v0 + v2 - v1`, as the console's hardware does.
+//!   corner opposite the right angle ([`right_angle`]), as the console's
+//!   hardware does.
 //! * **Heap indices** (added 2026-11-24) are clamped to [`HEAP_VIEWS`] − 1
 //!   (samplers [`HEAP_SAMPLERS`] − 1): the host's heaps have at least that
 //!   many slots, those past its own null, so an index past the heap (data
@@ -142,9 +143,37 @@
 //!   a copy holding each such address.
 //! * **View addresses** ([`HostShader::view_addresses`]): a buffer
 //!   descriptor's dwords 0-1 read as numbers (the BVH SRV's base address)
-//!   come from the root SRV `t1` in [`MEMORY_SPACE`]: per resource-heap
-//!   index, two dwords, the buffer view's title address (high dword bits
-//!   0-15; stride bits 0), zeros for no buffer view.
+//!   and an image descriptor's dwords 1-3 read only for sizes come from the
+//!   root SRV `t1` in [`MEMORY_SPACE`]: per resource-heap index, four
+//!   dwords, a console descriptor's first four as far as the host knows
+//!   them: a buffer view's title address (high dword bits 0-15; stride bits
+//!   0), a texture view's width and height - 1 (dword 1 bits 30-31, dword 2
+//!   bits 0-13 and 14-29), first and last level (dword 3 bits 12-15, 16-19)
+//!   and type (bits 28-31) with an identity swizzle; zeros for anything
+//!   else.
+//! * **Write marks** ([`HostShader::view_marks`], with
+//!   [`Options::view_marks`]; added 2026-11-25): every store or atomic
+//!   through an unordered buffer view from the heap (tables, the heap
+//!   itself, root UAVs as their heap views) also sets bits in the root UAV
+//!   `u`[`VIEW_WRITES`] in [`MEMORY_SPACE`], a bitmap of
+//!   [`VIEW_WRITE_BITS`] bits, so the host copies back only what shaders
+//!   wrote. The root SRV `t`[`VIEW_MARKS`] there holds two dwords per heap
+//!   index: a base bit and a phase (0-65535); a write of byte `x` of the
+//!   view (its offset in the view, an element times the stride plus the
+//!   offset) sets bit `base + ((phase + x) >> 16)`, for the access's first
+//!   and last byte, at most [`VIEW_WRITE_BITS`] − 1. Base
+//!   [`VIEW_MARK_NONE`]: nothing is marked. The host gives each copy of
+//!   title memory a run of bits, one per 64 KiB title page it touches, and
+//!   a view the bit of its first byte's page as base with that byte's
+//!   offset in its page as phase. Writes at computed addresses mark the
+//!   page-table bitmap instead ("Title memory").
+//! * **Read marks** (with [`Options::view_marks`]; added 2026-11-25):
+//!   every image instruction that reads a texture shader view the program
+//!   takes from the resource heap itself (not through a table, whose slots
+//!   the host makes for the draw) also sets bit
+//!   [`VIEW_READS`] + the view's heap index in the same bitmap, after the
+//!   written pages, where still clear: the host makes views it left null
+//!   until a shader reads them (textures the title placed itself).
 //!
 //! Entry points: [`translate`] (container bytes as the title passes them
 //! at pipeline creation → [`HostShader`]), [`emit`] (the same with the
@@ -178,7 +207,7 @@ mod flow_tests;
 pub mod host;
 mod lower;
 mod rect;
-pub use rect::rectangle_gs;
+pub use rect::{rectangle_gs, right_angle};
 #[cfg(all(test, windows))]
 mod memory_tests;
 mod sampler;
@@ -204,7 +233,8 @@ use crate::{ShaderError, io, ir, resource, structure};
 pub use sampler::StaticSampler;
 pub use shader::{
     HEAP_SAMPLERS, HEAP_VIEWS, MEMORY_SPACE, NULL_BUFFER_VIEW, ROOT_CBV_SPACE, SAMPLER_SPACE,
-    USER_DATA_SPACE, VIEW_STRIDES,
+    USER_DATA_SPACE, VIEW_INTEGER, VIEW_MARK_NONE, VIEW_MARKS, VIEW_READS, VIEW_SIGNED, VIEW_STRIDE_BITS,
+    VIEW_STRIDES, VIEW_WRITE_BITS, VIEW_WRITES,
 };
 
 /// The loop limit without an override: 2^20.
@@ -275,9 +305,9 @@ pub struct HostShader {
     /// Whether the host binds the page bitmap `u0` in [`MEMORY_SPACE`]
     /// (pages written and pages missed): whenever [`HostShader::memory`].
     pub memory_writes: bool,
-    /// Whether it reads buffer views' title addresses from their
-    /// descriptors: the host binds the view addresses `t1` in
-    /// [`MEMORY_SPACE`] (module notes, "Title memory").
+    /// Whether it reads buffer views' title addresses or texture views'
+    /// sizes from their descriptors: the host binds the view addresses `t1`
+    /// in [`MEMORY_SPACE`] (module notes, "View addresses").
     pub view_addresses: bool,
     /// Whether it takes descriptors from the resource heap at indices it
     /// computes (root type 5, not through a table): the host cannot tell
@@ -286,6 +316,11 @@ pub struct HostShader {
     /// Whether some of those are unordered access views: it may write
     /// through any of the heap's.
     pub heap_writes: bool,
+    /// Whether it marks the pages it writes through buffer views: the host
+    /// binds the view-mark table `t`[`VIEW_MARKS`] and the bitmap
+    /// `u`[`VIEW_WRITES`] in [`MEMORY_SPACE`] (module notes, "Write
+    /// marks").
+    pub view_marks: bool,
 }
 
 impl HostShader {
@@ -329,9 +364,23 @@ pub struct UserData {
     pub dword: u32,
 }
 
+/// How a translation is made.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Options {
+    /// Writes through buffer views mark the pages they write (module notes,
+    /// "Write marks"); the host must then bind the view-mark table and the
+    /// bitmap ([`HostShader::view_marks`]).
+    pub view_marks: bool,
+}
+
 /// Translates the vertex, pixel, compute or mesh program of a console
-/// shader container.
+/// shader container, without write marks.
 pub fn translate(container: &[u8]) -> Result<HostShader, ShaderError> {
+    translate_with(container, Options::default())
+}
+
+/// [`translate`] made as `options` say.
+pub fn translate_with(container: &[u8], options: Options) -> Result<HostShader, ShaderError> {
     let c = Container::parse(container)?;
     let dxil = c
         .part(FourCC::DXIL)
@@ -355,10 +404,10 @@ pub fn translate(container: &[u8]) -> Result<HostShader, ShaderError> {
     let res = resource::track(&p, &native.layout, native.stage, st.as_ref().ok())?;
     let io = io::raise(&p, &native)?;
     let st = st?;
-    emit(&c, &native, &p, &st, &io, &res)
+    emit_with(&c, &native, &p, &st, &io, &res, options)
 }
 
-/// Emits a program whose earlier stages already ran.
+/// Emits a program whose earlier stages already ran, without write marks.
 pub fn emit(
     c: &Container,
     native: &NativeProgram,
@@ -366,6 +415,19 @@ pub fn emit(
     st: &structure::Structured,
     io: &io::Io,
     res: &resource::Resources,
+) -> Result<HostShader, ShaderError> {
+    emit_with(c, native, p, st, io, res, Options::default())
+}
+
+/// [`emit`] made as `options` say.
+pub fn emit_with(
+    c: &Container,
+    native: &NativeProgram,
+    p: &ir::Program,
+    st: &structure::Structured,
+    io: &io::Io,
+    res: &resource::Resources,
+    options: Options,
 ) -> Result<HostShader, ShaderError> {
     let sig = |fourcc| -> Result<Vec<container::SigElement>, ShaderError> {
         match c.part(fourcc) {
@@ -432,6 +494,7 @@ pub fn emit(
         outputs: outputs.clone(),
         prims: prims.clone(),
         mesh_stride,
+        view_marks: options.view_marks,
     };
     let l = match lower::lower(&parts(st, res)) {
         // Discarded lanes kept on as helpers can read what no surviving
@@ -469,6 +532,7 @@ pub fn emit(
         view_addresses: l.view_addresses,
         heap: l.heap,
         heap_writes: l.heap_writes,
+        view_marks: l.view_marks,
     })
 }
 
@@ -584,6 +648,180 @@ mod tests {
     use super::*;
     use crate::native::{ComputeIo, StageIo};
 
+    #[test]
+    fn indexed_move_initializes_an_input_before_its_first_use() {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum Case {
+            Complete,
+            NonzeroBase,
+            WrongStart,
+            SkippedSlot,
+            Decrement,
+            Wrap,
+            UnknownStart,
+            ShortLoop,
+            ClobberedScc,
+            EarlyExit,
+            DivergentExit,
+            MaskedWrite,
+            SourceIsOld,
+            ReadBeforeWrite,
+            ReadOnBackedge,
+        }
+        use Case::*;
+
+        // A two-block do-while loop writes v[M0] from v2, then exports v1.
+        // On the first two passes M0 selects v0 and v1 respectively. Both
+        // registers initially contain raw perspective-center barycentrics.
+        let words = |case| {
+            let init = match case {
+                WrongStart => 0xbe80_0382,   // s_mov_b32 s0, 2
+                Wrap => 0xbe80_03c1,         // s_mov_b32 s0, -1
+                UnknownStart => 0x8000_8080, // s_add_u32 s0, 0, 0
+                _ => 0xbe80_0380,            // s_mov_b32 s0, 0
+            };
+            let mut w = vec![init, 0x7e04_0281, 0xbf82_0000]; // v_mov_b32 v2, 1; s_branch header
+            let latch = w.len();
+            if case == EarlyExit {
+                w.extend([0xbf06_8000, 0xbf85_0000]); // s_cmp_eq_u32 s0, 0; s_cbranch_scc1 exit
+            }
+            w.push(0xbe80_0302); // s_mov_b32 s0, s2
+            let header = w.len();
+            w[2] |= (header - 3) as u32;
+            w.push(0xbefc_0300); // s_mov_b32 m0, s0
+            w.push(match case {
+                SkippedSlot => 0x8102_8200, // s_add_i32 s2, s0, 2
+                Decrement => 0x8102_c100,   // s_add_i32 s2, s0, -1
+                _ => 0x8102_8100,           // s_add_i32 s2, s0, 1
+            });
+            if case == ReadBeforeWrite {
+                w.push(0x7e06_0301);
+            } // v_mov_b32 v3, v1
+            if case == MaskedWrite {
+                w.extend([0x7d84_0480, 0xbe84_3c6a]); // v_cmp_eq_u32 vcc, 0, v2; s_and_saveexec_b32 s4, vcc_lo
+            }
+            w.push(match case {
+                SourceIsOld => 0x7e00_8501, // v_movreld_b32 v0, v1
+                NonzeroBase => 0x7e02_8502, // v_movreld_b32 v1, v2
+                _ => 0x7e00_8502,           // v_movreld_b32 v0, v2
+            });
+            if case == MaskedWrite {
+                w.push(0x887e_047e);
+            } // s_or_b32 exec_lo, exec_lo, s4
+            if case == ReadOnBackedge {
+                w.push(0x7e06_0301);
+            } // v_mov_b32 v3, v1
+            let branch = if case == DivergentExit {
+                w.push(0x7d84_0480); // v_cmp_eq_u32 vcc, 0, v2
+                0xbf87_0000 // s_cbranch_vccnz latch
+            } else {
+                w.push(if matches!(case, ShortLoop | NonzeroBase) {
+                    0xbf06_8102
+                } else {
+                    0xbf06_8402
+                }); // s_cmp_eq_u32 s2, 1/4
+                if case == ClobberedScc {
+                    w.push(0xbf06_8000); // s_cmp_eq_u32 s0, 0 exits on the first pass
+                }
+                0xbf84_0000 // s_cbranch_scc0 latch
+            };
+            let rel = latch as i32 - (w.len() as i32 + 1);
+            w.push(branch | u32::from(rel as u16));
+            let exit = w.len();
+            if case == EarlyExit {
+                w[latch + 1] |= (exit - latch - 2) as u32;
+            }
+            let output = if matches!(case, ReadBeforeWrite | ReadOnBackedge) {
+                3
+            } else {
+                1
+            };
+            w.extend([0xf800_1801, output, 0xbf81_0000]); // exp mrt0.x done vm; s_endpgm
+            w
+        };
+        let target = SigElement {
+            name: "SV_Target".into(),
+            index: 0,
+            kind: 16,
+            comp: 9,
+            interp: 0,
+            row: Some(0),
+            col: 0,
+            cols: 1,
+            usage: 1,
+            half: false,
+        };
+        let sig = super::container::signature(&[target], false);
+        let bytes = crate::dxbc::build(&[(FourCC::OSG1, &sig)]);
+        let c = Container::parse(&bytes).unwrap();
+        for case in [
+            Complete,
+            NonzeroBase,
+            WrongStart,
+            SkippedSlot,
+            Decrement,
+            Wrap,
+            UnknownStart,
+            ShortLoop,
+            ClobberedScc,
+            EarlyExit,
+            DivergentExit,
+            MaskedWrite,
+            SourceIsOld,
+            ReadBeforeWrite,
+            ReadOnBackedge,
+        ] {
+            let native = NativeProgram {
+                stage: HwStage::Ps,
+                wave64: false,
+                vgprs: 4,
+                layout: vec![],
+                used: vec![],
+                io: StageIo::Ps {
+                    inputs: vec![],
+                    input_addr: 2,
+                    db_shader_control: 0,
+                    patches: vec![],
+                },
+                code: words(case).iter().flat_map(|w| w.to_le_bytes()).collect(),
+            };
+            let p = ir::build(&native.patched_code(), native.wave64, native.vgprs).unwrap();
+            let st = structure::structure(&p).unwrap();
+            let res = resource::track(&p, &native.layout, native.stage, Some(&st)).unwrap();
+            let io = io::raise(&p, &native).unwrap();
+            let shader = emit(&c, &native, &p, &st, &io, &res);
+            if matches!(case, Complete | NonzeroBase) {
+                let shader = shader.unwrap();
+                assert!(
+                    Container::parse(&shader.dxil)
+                        .unwrap()
+                        .part(FourCC::DXIL)
+                        .is_some()
+                );
+                #[cfg(windows)]
+                if let Ok(mut validator) =
+                    validator::Validator::load(validator::Validator::default_path().as_deref())
+                {
+                    let mut dxil = shader.dxil;
+                    validator.validate(&mut dxil).unwrap();
+                    eprintln!("synthetic {case:?} SDK valid bytes={}", dxil.len());
+                }
+            } else {
+                eprintln!("synthetic {case:?} {:?}", shader.as_ref().err());
+                assert!(
+                    matches!(
+                        shader,
+                        Err(ShaderError::Unsupported {
+                            what: "barycentrics read directly",
+                            ..
+                        })
+                    ),
+                    "{case:?}"
+                );
+            }
+        }
+    }
+
     /// A pixel shader writing SV_StencilRef (channel y of `exp mrtz`).
     /// DXC sets ShaderFlags.StencilRef (bit 11) for a pixel shader whose
     /// output signature has SV_StencilRef, and the feature bit
@@ -644,6 +882,98 @@ mod tests {
         let sfi0 = host.part(FourCC::SFI0).unwrap().data;
         let features = u64::from_le_bytes(sfi0.try_into().unwrap());
         assert_ne!(features & 0x200, 0, "SFI0 {features:#x}: no StencilRef");
+    }
+
+    #[test]
+    fn immediate_sampler_slots_distinguish_comparison_uses() {
+        let words = [
+            0xBE81_0380u32, // s_mov_b32 s1, 0
+            0xF40C_0000,
+            0xFA00_0000, // s_load_dwordx8 s[0:7], s[0:1], null
+            0xBE88_0380, // s_mov_b32 s8, 0
+            0xBE89_0380, // s_mov_b32 s9, 0
+            0xBE8A_0380, // s_mov_b32 s10, 0
+            0xBE8B_0380, // s_mov_b32 s11, 0
+            0x7E00_02F0, // v_mov_b32 v0, 0.5 (comparison reference)
+            0x7E02_02F0, // v_mov_b32 v1, 0.5 (u)
+            0x7E04_02F0, // v_mov_b32 v2, 0.5 (v)
+            0xBF8C_0070, // s_waitcnt vmcnt(0) lgkmcnt(0)
+            0xF080_0108,
+            0x0040_0301, // image_sample v3, v[1:2], s[0:7], s[8:11]
+            0xF0A0_0108,
+            0x0040_0400, // image_sample_c v4, v[0:2], s[0:7], s[8:11]
+            0xF0BC_0108,
+            0x0040_0500, // image_sample_c_lz v5, v[0:2], s[0:7], s[8:11]
+            0xF080_0108,
+            0x0040_0601, // image_sample v6, v[1:2], s[0:7], s[8:11]
+            0xBF8C_3F70, // s_waitcnt vmcnt(0)
+            0xF800_180F,
+            0x0605_0403, // exp mrt0, v3, v4, v5, v6 done vm
+            0xBF81_0000,
+        ];
+        let native = NativeProgram {
+            stage: HwStage::Ps,
+            wave64: false,
+            vgprs: 7,
+            layout: vec![crate::native::RootParam {
+                root: RootType::Table,
+                table_offset_dwords: 0,
+                sgprs: 1,
+                base_register: 0,
+                user_data: 0,
+                slot: 0,
+            }],
+            used: vec![crate::native::UsedResource {
+                kind: crate::native::ResourceType::Srv,
+                root: RootType::Table,
+                table_offset_dwords: 0,
+                lower_bound: 0,
+                stride: 0,
+                dwords: 8,
+                user_data: 0,
+                slot: 0,
+            }],
+            io: StageIo::Ps {
+                inputs: vec![],
+                input_addr: 0,
+                db_shader_control: 0,
+                patches: vec![],
+            },
+            code: words.iter().flat_map(|w| w.to_le_bytes()).collect(),
+        };
+        let output = SigElement {
+            name: "SV_Target".into(),
+            index: 0,
+            kind: 16,
+            comp: 9,
+            interp: 0,
+            row: Some(0),
+            col: 0,
+            cols: 4,
+            usage: 15,
+            half: false,
+        };
+        let osg1 = container::signature(&[output], false);
+        let bytes = crate::dxbc::build(&[(FourCC::OSG1, &osg1)]);
+        let c = Container::parse(&bytes).unwrap();
+        let p = ir::build(&native.patched_code(), native.wave64, native.vgprs).unwrap();
+        let st = structure::structure(&p).unwrap();
+        let res = resource::track(&p, &native.layout, native.stage, Some(&st)).unwrap();
+        let io = io::raise(&p, &native).unwrap();
+        let out = emit(&c, &native, &p, &st, &io, &res).unwrap();
+
+        let sampler = StaticSampler::from_words([0; 4]);
+        let comparison = StaticSampler {
+            filter: sampler.filter | 0x80,
+            ..sampler
+        };
+        assert_eq!(out.samplers, [[0; 4]; 2]);
+        assert_eq!(out.static_samplers, [sampler, comparison]);
+        #[cfg(windows)]
+        if let Some(path) = super::validator::Validator::default_path() {
+            let mut v = super::validator::Validator::load(Some(&path)).unwrap();
+            v.validate(&mut out.dxil.clone()).unwrap();
+        }
     }
 
     /// A wave64 compute program that writes only EXEC's high dword
@@ -714,9 +1044,12 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn stub_pipeline_is_created() {
-        let Ok(host) = super::host::Host::new(false) else {
-            eprintln!("no SM 6.6 device; skipped");
-            return;
+        let host = match super::host::Host::new(false) {
+            Ok(host) => host,
+            Err(e) => {
+                eprintln!("no SM 6.6 device ({e}); skipped");
+                return;
+            }
         };
         let ps = super::HostShader {
             stage: crate::HwStage::Ps,
@@ -732,6 +1065,7 @@ mod tests {
             view_addresses: false,
             heap: false,
             heap_writes: false,
+            view_marks: false,
         };
         let file = |var: &str, stage| {
             std::env::var(var).ok().map(|p| super::HostShader {
@@ -748,6 +1082,7 @@ mod tests {
                 view_addresses: false,
                 heap: false,
                 heap_writes: false,
+                view_marks: false,
             })
         };
         let ps = file("VICTORY_REF_PS", crate::HwStage::Ps).unwrap_or(ps);
@@ -786,6 +1121,184 @@ mod tests {
         let ours = c[4..20].to_vec();
         v.validate(&mut c).unwrap();
         assert_eq!(c[4..20], ours[..], "our hash differs from the validator's");
+    }
+
+    /// Triangle (0, 1, 2), each corner's 9-bit index in its 10-bit field.
+    const TRIANGLE: u32 = 1 << 10 | 2 << 20;
+    /// The edge flags of the three corners (bits 9, 19 and 29).
+    const EDGE_FLAGS: u32 = 1 << 9 | 1 << 19 | 1 << 29;
+    /// The culling bit.
+    const CULL: u32 = 1 << 31;
+
+    /// A one-wave (32-lane) triangle mesh program whose lanes all export
+    /// primitive `prim` and, as vertex `lane`, the position
+    /// (lane & 1 ? 3 : -1, lane & 2 ? 3 : -1, 0.5, 1): triangle (0, 1, 2)
+    /// covers the whole target.
+    fn triangle_mesh(prim: u32) -> Result<HostShader, ShaderError> {
+        let words = [
+            0xD765_0001u32, // v_mbcnt_lo_u32_b32 v1, -1, 0
+            0x0001_00C1,
+            0x3604_0281, // v_and_b32 v2, 1, v1
+            0x3606_0282, // v_and_b32 v3, 2, v1
+            0x7E04_0D02, // v_cvt_f32_u32 v2, v2
+            0x7E06_0D03, // v_cvt_f32_u32 v3, v3
+            0x1008_04F6, // v_mul_f32 v4, 4.0, v2
+            0x0608_08F3, // v_add_f32 v4, -1.0, v4
+            0x100A_06F4, // v_mul_f32 v5, 2.0, v3
+            0x060A_0AF3, // v_add_f32 v5, -1.0, v5
+            0x7E0C_02F0, // v_mov_b32 v6, 0.5
+            0x7E0E_02F2, // v_mov_b32 v7, 1.0
+            0x7E12_02FF, // v_mov_b32 v9, prim
+            prim,
+            0xF800_0941, // exp prim v9, off, off, off done
+            0x0000_0009,
+            0xF800_08CF, // exp pos0 v4, v5, v6, v7 done
+            0x0706_0504,
+            0xBF81_0000, // s_endpgm
+        ];
+        let native = NativeProgram {
+            stage: HwStage::Ms,
+            wave64: false,
+            vgprs: 10,
+            layout: vec![],
+            used: vec![],
+            io: StageIo::Ms(crate::native::MeshIo {
+                outputs: vec![],
+                clip_cntl: 0,
+                threads: 32,
+                max_vertices: 32,
+                max_primitives: 32,
+                topology: 2,
+                lds_bytes: 0,
+            }),
+            code: words.iter().flat_map(|w| w.to_le_bytes()).collect(),
+        };
+        let position = SigElement {
+            name: "SV_Position".into(),
+            index: 0,
+            kind: 3,
+            comp: 9,
+            interp: 0,
+            row: Some(0),
+            col: 0,
+            cols: 4,
+            usage: 0xF,
+            half: false,
+        };
+        let osg1 = container::signature(&[position], false);
+        let bytes = crate::dxbc::build(&[(FourCC::OSG1, &osg1)]);
+        let c = Container::parse(&bytes)?;
+        let p = ir::build(&native.patched_code(), native.wave64, native.vgprs)?;
+        let st = structure::structure(&p)?;
+        let res = resource::track(&p, &native.layout, native.stage, Some(&st))?;
+        let io = io::raise(&p, &native)?;
+        emit(&c, &native, &p, &st, &io, &res)
+    }
+
+    /// A primitive export's corners are 9-bit indices: the edge flag above
+    /// each (bits 9, 19, 29) is no part of it. Masking ten bits made a
+    /// flagged corner index 512 or more, past any mesh program's vertices
+    /// (the draw test below shows the triangle). Flagged, unflagged and
+    /// culled exports translate, and dxil.dll, where there is one, takes
+    /// each module.
+    #[test]
+    fn primitive_export_indices_drop_the_edge_flags() {
+        #[cfg(windows)]
+        let mut validator = super::validator::Validator::load(
+            super::validator::Validator::default_path().as_deref(),
+        )
+        .ok();
+        for prim in [
+            TRIANGLE,
+            TRIANGLE | EDGE_FLAGS,
+            TRIANGLE | EDGE_FLAGS | CULL,
+        ] {
+            let ms = triangle_mesh(prim).unwrap_or_else(|e| panic!("{prim:#x}: {e}"));
+            #[cfg(windows)]
+            if let Some(v) = validator.as_mut() {
+                v.validate(&mut ms.dxil.clone())
+                    .unwrap_or_else(|e| panic!("{prim:#x}: {e}"));
+            }
+        }
+    }
+
+    /// A triangle mesh program on the host GPU and on WARP (where they have
+    /// mesh shaders): triangle (0, 1, 2) covers the target with its corners'
+    /// edge flags set as without them; with the culling bit, nothing is lit.
+    #[test]
+    #[cfg(windows)]
+    fn edge_flagged_triangles_draw_as_unflagged_ones() {
+        use super::host::{Draw, Host, Root};
+        use windows::Win32::Graphics::Direct3D12::{
+            D3D12_FEATURE_D3D12_OPTIONS7, D3D12_FEATURE_DATA_D3D12_OPTIONS7,
+            D3D12_MESH_SHADER_TIER_NOT_SUPPORTED, D3D12_SHADER_VISIBILITY_MESH,
+        };
+        let _one = super::valu_tests::ONE_AT_A_TIME
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let ps = constant_color();
+        let mut ran = 0;
+        for (label, warp) in [("hardware", false), ("warp", true)] {
+            let Ok(host) = Host::new(warp) else {
+                eprintln!("no SM 6.6 {label} device; skipped");
+                continue;
+            };
+            let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS7::default();
+            // SAFETY: the query writes the structure of the given size.
+            let queried = unsafe {
+                host.device.CheckFeatureSupport(
+                    D3D12_FEATURE_D3D12_OPTIONS7,
+                    (&raw mut options).cast(),
+                    size_of_val(&options) as u32,
+                )
+            };
+            if queried.is_err() || options.MeshShaderTier == D3D12_MESH_SHADER_TIER_NOT_SUPPORTED {
+                eprintln!("no mesh shaders on the {label} device; skipped");
+                continue;
+            }
+            for (prim, culled) in [
+                (TRIANGLE, false),
+                (TRIANGLE | EDGE_FLAGS, false),
+                (TRIANGLE | EDGE_FLAGS | CULL, true),
+            ] {
+                let ms = triangle_mesh(prim).unwrap();
+                let root = host
+                    .root_signature_for(&[(&ms, D3D12_SHADER_VISIBILITY_MESH)])
+                    .unwrap();
+                let pso = host
+                    .mesh_pipeline_with(&root, &ms.dxil, &ps)
+                    .unwrap_or_else(|e| panic!("{label}: mesh pipeline: {e}"));
+                let texels = host
+                    .draw(
+                        &root,
+                        &pso,
+                        &Draw {
+                            roots: vec![(0, Root::Constants(vec![0]))],
+                            textures: &[],
+                            samplers: &[],
+                            vertices: &[],
+                            stride: 0,
+                            size: (16, 16),
+                            mesh_groups: 1,
+                        },
+                    )
+                    .unwrap_or_else(|e| panic!("{label}: draw: {e}"));
+                let lit = texels.iter().filter(|t| t[3] != 0.0).count();
+                if culled {
+                    assert_eq!(lit, 0, "{label}, {prim:#x}: a culled triangle lit texels");
+                    continue;
+                }
+                assert!(
+                    texels.iter().all(|t| *t == [1.0, 0.5, 0.25, 1.0]),
+                    "{label}, {prim:#x}: {lit} of 256 texels lit"
+                );
+            }
+            eprintln!("{label}: edge-flagged triangles drew");
+            ran += 1;
+        }
+        if ran == 0 {
+            eprintln!("no device with mesh shaders; skipped");
+        }
     }
 
     /// A pixel shader interpolating at sample positions (PERSP_SAMPLE
@@ -844,8 +1357,7 @@ mod tests {
             let c = super::Container::parse(&bytes).unwrap();
             let p = crate::ir::build(&native.patched_code(), native.wave64, native.vgprs).unwrap();
             let st = crate::structure::structure(&p).unwrap();
-            let res =
-                crate::resource::track(&p, &native.layout, native.stage, Some(&st)).unwrap();
+            let res = crate::resource::track(&p, &native.layout, native.stage, Some(&st)).unwrap();
             let io = crate::io::raise(&p, &native).unwrap();
             let out = super::emit(&c, &native, &p, &st, &io, &res).unwrap();
             // dxil.dll, where there is one, checks PSV0 against the module.
@@ -1101,6 +1613,125 @@ mod tests {
             ..texcoord(false)
         };
         emit_pixel(&words, vec![color], 1 << 1, &isg1, &osg1).unwrap();
+    }
+
+    /// The LLVM text `dxc -dumpbin` prints for a DXIL container, when dxc
+    /// is installed.
+    #[cfg(windows)]
+    fn dump_dxil(container: &[u8]) -> Option<String> {
+        let dxc = match std::env::var_os("VICTORY_PC_DXC") {
+            Some(p) => std::path::PathBuf::from(p),
+            None => super::validator::Validator::default_path()?.with_file_name("dxc.exe"),
+        };
+        if !dxc.exists() {
+            return None;
+        }
+        let file = std::env::temp_dir().join(format!("victory-interp-{}.dxil", std::process::id()));
+        std::fs::write(&file, container).ok()?;
+        let out = std::process::Command::new(dxc)
+            .arg("-dumpbin")
+            .arg(&file)
+            .output()
+            .ok()?;
+        let _ = std::fs::remove_file(&file);
+        assert!(
+            out.status.success(),
+            "dxc -dumpbin failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn interpolated_f16_writes_the_op_sel_half_with_modifiers() {
+        // p1_f32 v2, v0, attr0.x; then a p2_f16 completing it into v2.
+        let p2 = |dst_high: bool, omod: u32, clamp: bool| {
+            let vgpr = |n: u32| 256 + n;
+            let mut w0 = 0x35u32 << 26 | 0x35au32 << 16 | 2;
+            if dst_high {
+                w0 |= 1 << 14; // op_sel[3]: the high destination half.
+            }
+            if clamp {
+                w0 |= 1 << 15;
+            }
+            let w1 = vgpr(1) << 9 | vgpr(2) << 18;
+            [w0, w1 | omod << 27]
+        };
+        let dump = |dst_high: bool, omod: u32, clamp: bool| {
+            let [w0, w1] = p2(dst_high, omod, clamp);
+            let words = [
+                0xC808_0000u32, // v_interp_p1_f32 v2, v0, attr0.x
+                w0,
+                w1, // v_interp_p2_f16 v2, attr0, v1, v0
+                0xF800_180F,
+                0x0202_0202, // exp mrt0, v2, v2, v2, v2 done vm
+                0xBF81_0000,
+            ];
+            let native = super::NativeProgram {
+                stage: super::HwStage::Ps,
+                wave64: false,
+                vgprs: 4,
+                layout: vec![],
+                used: vec![],
+                io: crate::native::StageIo::Ps {
+                    inputs: vec![crate::native::PsInput {
+                        usage: crate::native::Usage::Generic,
+                        row: 0,
+                        mask: 0b1111,
+                        attr: 0,
+                        flat: false,
+                        fp16: true,
+                        pack2: false,
+                        row2: 0,
+                    }],
+                    input_addr: 2,
+                    db_shader_control: 0,
+                    patches: vec![],
+                },
+                code: words.iter().flat_map(|w| w.to_le_bytes()).collect(),
+            };
+            let el = |name: &str, kind, usage, half| SigElement {
+                name: name.into(),
+                index: 0,
+                kind,
+                comp: 9,
+                interp: 0,
+                row: Some(0),
+                col: 0,
+                cols: 4,
+                usage,
+                half,
+            };
+            let isg1 = super::container::signature(&[el("TEXCOORD", 0, 0, true)], true);
+            let osg1 = super::container::signature(&[el("SV_Target", 16, 15, false)], false);
+            let bytes =
+                crate::dxbc::build(&[(super::FourCC::ISG1, &isg1), (super::FourCC::OSG1, &osg1)]);
+            let c = super::Container::parse(&bytes).unwrap();
+            let p = crate::ir::build(&native.patched_code(), native.wave64, native.vgprs).unwrap();
+            let st = crate::structure::structure(&p).unwrap();
+            let res = crate::resource::track(&p, &native.layout, native.stage, Some(&st)).unwrap();
+            let io = crate::io::raise(&p, &native).unwrap();
+            super::emit(&c, &native, &p, &st, &io, &res).unwrap().dxil
+        };
+        let (Some(low), Some(high)) = (
+            dump_dxil(&dump(false, 0, false)),
+            dump_dxil(&dump(true, 1, true)),
+        ) else {
+            eprintln!("no dxc.exe; DXIL check skipped");
+            return;
+        };
+        // The low-half write keeps the destination's high half.
+        assert!(low.contains("-65536"), "low write keeps the high half");
+        // The high-half write shifts the result up by 16.
+        assert!(high.contains("shl i32"), "op_sel[3] writes the high half");
+        // omod mul:2 and clamp (dx.op.unary.f32, opcode 7) are applied.
+        assert!(high.contains("2.000000e+00"), "omod multiplies by two");
+        assert!(
+            high.contains("dx.op.unary.f32(i32 7"),
+            "clamp saturates the result"
+        );
+        assert!(!low.contains("dx.op.unary.f32(i32 7"));
     }
 
     /// A pixel shader reading channel z of an input whose element starts at
