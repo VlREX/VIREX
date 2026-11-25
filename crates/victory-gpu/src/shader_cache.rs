@@ -324,6 +324,10 @@ fn decode(bytes: &[u8]) -> Option<Result<HostShader, String>> {
     let root_srvs = r.list()?;
     let root_uavs = r.list()?;
     let memory = r.word()?;
+    // Unknown flags indicate a damaged or unsupported cache entry.
+    if memory & !0x3f != 0 {
+        return None;
+    }
     r.0.is_empty().then_some(Ok(HostShader {
         stage,
         dxil,
@@ -466,6 +470,19 @@ mod tests {
             }
         }
         files
+    }
+
+    #[test]
+    fn cache_entries_reject_unknown_memory_flags() {
+        let bytes = encode(&Ok(shader()));
+        let at = bytes.len() - 4;
+        let flags = u32::from_le_bytes(bytes[at..].try_into().unwrap());
+        for bit in 6..32 {
+            let mut corrupt = bytes.clone();
+            corrupt[at..].copy_from_slice(&(flags | (1 << bit)).to_le_bytes());
+            assert!(decode(&corrupt).is_none());
+        }
+        assert_eq!(decode(&bytes), Some(Ok(shader())));
     }
 
     #[test]
