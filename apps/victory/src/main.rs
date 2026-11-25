@@ -71,7 +71,7 @@ enum Command {
         disasm: bool,
         /// Instead list the effects of shader databases: technique, pass,
         /// shaders (name, container hash, engine hash) and pass state.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["verbose", "disasm"])]
         effects: bool,
     },
     /// Run every shader found (containers, SGD5 files) through the
@@ -246,4 +246,31 @@ pub(crate) fn default_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
         "no paths given and none configured (see victory.example.toml)"
     );
     Ok(all)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    #[test]
+    fn shader_info_effects_rejects_container_output_flags() {
+        for flag in ["--verbose", "--disasm"] {
+            let parsed = Cli::try_parse_from(["victory", "shader-info", "--effects", flag]);
+            let Err(error) = parsed else {
+                panic!("--effects unexpectedly accepted {flag}");
+            };
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+        }
+    }
+
+    #[test]
+    fn shader_info_accepts_each_output_mode() {
+        for args in [
+            &["victory", "shader-info", "--effects"][..],
+            &["victory", "shader-info", "--verbose", "--disasm"][..],
+        ] {
+            assert!(Cli::try_parse_from(args.iter().copied()).is_ok());
+        }
+    }
 }
