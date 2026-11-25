@@ -133,6 +133,12 @@ fn explicit_config_path(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Opt
 }
 
 fn subdir(root: &Path, sub: &str) -> Result<PathBuf> {
+    let sub = Path::new(sub);
+    // Joining an absolute path replaces the root; parent components can escape it.
+    anyhow::ensure!(
+        sub.components().all(|c| matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir)),
+        "subdirectory must be relative and must not contain parent components"
+    );
     let dir = root.join(sub);
     ensure_outside_repo(&dir)?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -217,6 +223,19 @@ mod tests {
         let text = include_str!("../../../victory.example.toml");
         let parsed: FileConfig = toml::from_str(text).unwrap();
         assert!(parsed.paths.game_dir.is_some());
+    }
+
+    #[test]
+    fn cache_subdir_rejects_paths_outside_its_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        let cfg = Config { cache_dir: root.clone(), ..Default::default() };
+        assert_eq!(cfg.cache_subdir("a/b").unwrap(), root.join("a/b"));
+        let outside = tmp.path().join("outside");
+        assert!(cfg.cache_subdir("../outside").is_err());
+        assert!(cfg.cache_subdir(outside.to_str().unwrap()).is_err());
+        assert!(!outside.exists());
     }
 
     #[test]
