@@ -62,21 +62,52 @@ fn err(e: windows::core::Error) -> String {
     e.message().to_string()
 }
 
+/// The first adapter that is a GPU: not flagged software, and with video
+/// memory of its own. A machine without one (GitHub's Windows runner has only
+/// `Microsoft Basic Render Driver`) has nothing to run the hardware-only
+/// checks on, and CI proved that the flag of adapter 0 alone is not enough:
+/// the runner's default adapter is not flagged software and its device still
+/// refuses a wave of 32
+/// (`permutes_read_the_lane_named_and_zero_from_lanes_left_out`). WARP and the
+/// basic render driver report no dedicated video memory, which is what this
+/// asks for as well.
+fn hardware_adapter(factory: &IDXGIFactory4) -> windows::core::Result<IDXGIAdapter1> {
+    // SAFETY: plain DXGI adapter enumeration.
+    unsafe {
+        for index in 0.. {
+            let Ok(adapter) = factory.EnumAdapters1(index) else {
+                break;
+            };
+            let desc = adapter.GetDesc1()?;
+            let software = desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0;
+            if !software && desc.DedicatedVideoMemory > 0 {
+                return Ok(adapter);
+            }
+        }
+    }
+    Err(windows::core::Error::new(
+        windows::Win32::Foundation::E_FAIL,
+        "no hardware adapter",
+    ))
+}
+
 impl Host {
     /// The default adapter, or WARP with `warp` (or `VICTORY_WARP=1`).
+    /// A software default adapter (a machine without a GPU, as CI) is
+    /// refused, so hardware-only checks never run on WARP.
     pub fn new(warp: bool) -> Result<Self, String> {
         let warp = warp || std::env::var("VICTORY_WARP").is_ok_and(|v| v == "1");
         // SAFETY: plain D3D12/DXGI calls with valid out pointers.
         unsafe {
             let mut device: Option<ID3D12Device> = None;
-            if warp {
-                let factory: IDXGIFactory4 =
-                    CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).map_err(err)?;
-                let adapter: IDXGIAdapter = factory.EnumWarpAdapter().map_err(err)?;
-                D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_12_0, &mut device).map_err(err)?;
+            let factory: IDXGIFactory4 =
+                CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).map_err(err)?;
+            let adapter: IDXGIAdapter1 = if warp {
+                factory.EnumWarpAdapter().map_err(err)?
             } else {
-                D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_0, &mut device).map_err(err)?;
-            }
+                hardware_adapter(&factory).map_err(err)?
+            };
+            D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_12_0, &mut device).map_err(err)?;
             let device = device.ok_or("no device")?;
             let mut sm = D3D12_FEATURE_DATA_SHADER_MODEL {
                 HighestShaderModel: D3D_SHADER_MODEL_6_6,
@@ -158,6 +189,10 @@ impl Host {
         if stages.iter().any(|(s, _)| s.view_addresses) {
             views.push((1, super::MEMORY_SPACE, 1));
         }
+        if stages.iter().any(|(s, _)| s.view_marks) {
+            views.push((super::VIEW_MARKS, super::MEMORY_SPACE, 1));
+            views.push((super::VIEW_WRITES, super::MEMORY_SPACE, 2));
+        }
         for (register, space, kind) in views {
             params.push(D3D12_ROOT_PARAMETER1 {
                 ParameterType: match kind {
@@ -175,12 +210,24 @@ impl Host {
                 ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
             });
         }
+        let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS19::default();
+        // SAFETY: the feature query writes the structure of the given size.
+        // Older runtimes may not recognize OPTIONS19; that means no support.
+        let aniso_point_mip_supported = unsafe {
+            self.device.CheckFeatureSupport(
+                D3D12_FEATURE_D3D12_OPTIONS19,
+                (&raw mut options).cast(),
+                size_of_val(&options) as u32,
+            )
+        }
+        .is_ok()
+            && options.AnisoFilterWithPointMipSupported.as_bool();
         let mut samplers = Vec::new();
         for &(s, vis) in stages {
             for (n, d) in s.static_samplers.iter().enumerate() {
                 let [u, v, w] = d.address.map(|a| D3D12_TEXTURE_ADDRESS_MODE(a as i32));
                 samplers.push(D3D12_STATIC_SAMPLER_DESC {
-                    Filter: D3D12_FILTER(d.filter as i32),
+                    Filter: D3D12_FILTER(d.filter_for_host(aniso_point_mip_supported) as i32),
                     AddressU: u,
                     AddressV: v,
                     AddressW: w,
@@ -670,6 +717,7 @@ fn fmad_probe() -> Result<HostShader, crate::ShaderError> {
         outputs: Vec::new(),
         prims: Vec::new(),
         mesh_stride: 0,
+        view_marks: false,
     })?;
     Ok(HostShader {
         stage: HwStage::Cs,
@@ -685,6 +733,7 @@ fn fmad_probe() -> Result<HostShader, crate::ShaderError> {
         view_addresses: lowered.view_addresses,
         heap: lowered.heap,
         heap_writes: lowered.heap_writes,
+        view_marks: lowered.view_marks,
     })
 }
 
@@ -783,6 +832,7 @@ fn stub(pixel: bool, outputs: Vec<SigElement>) -> HostShader {
         view_addresses: false,
         heap: false,
         heap_writes: false,
+        view_marks: false,
     }
 }
 
@@ -1189,6 +1239,9 @@ pub enum View<'a> {
     Uint2TextureUav(u32, u32),
     /// A typed RGBA16F buffer UAV of this many elements, zeroed.
     HalfUav(u32),
+    /// A typed buffer UAV in this format, of this many elements of this many
+    /// bytes, zeroed.
+    TypedUav(DXGI_FORMAT, u32, u32),
     /// A constant buffer of these dwords.
     Cbv(&'a [u32]),
     /// A buffer SRV over these dwords.
@@ -1205,6 +1258,34 @@ pub enum View<'a> {
     /// host's null raw buffer SRV at [`super::NULL_BUFFER_VIEW`] and UAV
     /// below it.
     NullBuffers,
+}
+
+/// The host's view-stride table (`t`[`super::VIEW_STRIDES`]) for a view
+/// heap of `views`, as `victory_gpu` fills it: per slot the element size of
+/// a buffer view (4 for raw ones), with [`super::VIEW_INTEGER`] (and
+/// [`super::VIEW_SIGNED`]) for typed views of integer formats; 0 elsewhere.
+#[cfg(test)]
+pub fn view_strides(views: &[View]) -> Vec<u32> {
+    let kind = |f: DXGI_FORMAT| match f {
+        DXGI_FORMAT_R32G32B32A32_UINT | DXGI_FORMAT_R16G16B16A16_UINT | DXGI_FORMAT_R32G32_UINT
+        | DXGI_FORMAT_R10G10B10A2_UINT | DXGI_FORMAT_R8G8B8A8_UINT | DXGI_FORMAT_R16G16_UINT
+        | DXGI_FORMAT_R32_UINT | DXGI_FORMAT_R8G8_UINT | DXGI_FORMAT_R16_UINT | DXGI_FORMAT_R8_UINT => super::VIEW_INTEGER,
+        DXGI_FORMAT_R32G32B32A32_SINT | DXGI_FORMAT_R16G16B16A16_SINT | DXGI_FORMAT_R32G32_SINT
+        | DXGI_FORMAT_R8G8B8A8_SINT | DXGI_FORMAT_R16G16_SINT | DXGI_FORMAT_R32_SINT
+        | DXGI_FORMAT_R8G8_SINT | DXGI_FORMAT_R16_SINT | DXGI_FORMAT_R8_SINT => super::VIEW_INTEGER | super::VIEW_SIGNED,
+        _ => 0,
+    };
+    views
+        .iter()
+        .map(|v| match *v {
+            View::Buffer { stride: Stride::Raw, .. } | View::RawUav(_) => 4,
+            View::Buffer { stride: Stride::Typed, .. } => 16,
+            View::Buffer { stride: Stride::Structured(n), .. } => n,
+            View::Buffer { stride: Stride::Format(f, n), .. } | View::TypedUav(f, _, n) => n | kind(f),
+            View::HalfUav(_) => 8,
+            _ => 0,
+        })
+        .collect()
 }
 
 /// How [`View::Buffer`] is viewed.
@@ -1352,6 +1433,32 @@ impl Host {
                 b.Unmap(0, None);
                 Ok(b)
             };
+            // Zeros a UAV made as a copy destination (`size`: a texture's,
+            // `n` its words per texel, else a buffer's dwords) and returns
+            // the upload buffer to keep. A new committed resource is not
+            // always zeroed: WARP hands out memory a freed buffer of ours held.
+            let zero = |r: &ID3D12Resource, size: Option<(u32, u32)>, n: u32| {
+                let zeros = match size {
+                    Some((w, h)) => {
+                        let pitch = (w * 4 * n).next_multiple_of(256);
+                        let zeros = upload(&vec![0; (pitch * h / 4) as usize])?;
+                        let from = footprint_as(&zeros, w, h, n);
+                        list.CopyTextureRegion(&subresource(r), 0, 0, 0, &from, None);
+                        zeros
+                    }
+                    None => {
+                        let zeros = upload(&vec![0; n as usize])?;
+                        list.CopyBufferRegion(r, 0, &zeros, 0, u64::from(n) * 4);
+                        zeros
+                    }
+                };
+                list.ResourceBarrier(&[transition(
+                    r,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                )]);
+                Ok::<_, String>(zeros)
+            };
             let slots = match d.views.last() {
                 Some(View::NullBuffers) => super::HEAP_VIEWS as usize,
                 _ => d.views.len(),
@@ -1493,7 +1600,7 @@ impl Host {
                         dev.CreateShaderResourceView(&tex, None, at);
                         keep.push(tex);
                     }
-                    View::RawUav(_) | View::HalfUav(_) => {
+                    View::RawUav(_) | View::HalfUav(_) | View::TypedUav(..) => {
                         // (dwords, format, elements, flags)
                         let (n, format, elements, flags) = match *v {
                             View::HalfUav(e) => (
@@ -1502,6 +1609,9 @@ impl Host {
                                 e,
                                 D3D12_BUFFER_UAV_FLAG_NONE,
                             ),
+                            View::TypedUav(format, e, bytes) => {
+                                ((e * bytes).div_ceil(4), format, e, D3D12_BUFFER_UAV_FLAG_NONE)
+                            }
                             View::RawUav(n) => {
                                 (n, DXGI_FORMAT_R32_TYPELESS, n, D3D12_BUFFER_UAV_FLAG_RAW)
                             }
@@ -1511,7 +1621,7 @@ impl Host {
                         let b = make(
                             D3D12_HEAP_TYPE_DEFAULT,
                             &buffer(bytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
-                            D3D12_RESOURCE_STATE_COMMON,
+                            D3D12_RESOURCE_STATE_COPY_DEST,
                         )?;
                         let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
                             Format: format,
@@ -1525,6 +1635,7 @@ impl Host {
                             },
                         };
                         dev.CreateUnorderedAccessView(&b, None, Some(&desc), at);
+                        keep.push(zero(&b, None, n)?);
                         let rb = make(
                             D3D12_HEAP_TYPE_READBACK,
                             &buffer(bytes, D3D12_RESOURCE_FLAG_NONE),
@@ -1536,9 +1647,10 @@ impl Host {
                         let t = make(
                             D3D12_HEAP_TYPE_DEFAULT,
                             &texture(w, h, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
-                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                            D3D12_RESOURCE_STATE_COPY_DEST,
                         )?;
                         dev.CreateUnorderedAccessView(&t, None, None, at);
+                        keep.push(zero(&t, Some((w, h)), 4)?);
                         let pitch = (w * 16).next_multiple_of(256);
                         let rb = make(
                             D3D12_HEAP_TYPE_READBACK,
@@ -1555,9 +1667,10 @@ impl Host {
                         let t = make(
                             D3D12_HEAP_TYPE_DEFAULT,
                             &texture_as(w, h, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, format),
-                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                            D3D12_RESOURCE_STATE_COPY_DEST,
                         )?;
                         dev.CreateUnorderedAccessView(&t, None, None, at);
+                        keep.push(zero(&t, Some((w, h)), words)?);
                         let pitch = (w * 4 * words).next_multiple_of(256);
                         let rb = make(
                             D3D12_HEAP_TYPE_READBACK,
@@ -1755,9 +1868,10 @@ impl Host {
                         let b = make(
                             D3D12_HEAP_TYPE_DEFAULT,
                             &buffer(bytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
-                            D3D12_RESOURCE_STATE_COMMON,
+                            D3D12_RESOURCE_STATE_COPY_DEST,
                         )?;
                         list.SetComputeRootUnorderedAccessView(*param, b.GetGPUVirtualAddress());
+                        keep.push(zero(&b, None, n)?);
                         let rb = make(
                             D3D12_HEAP_TYPE_READBACK,
                             &buffer(bytes, D3D12_RESOURCE_FLAG_NONE),
@@ -1770,7 +1884,6 @@ impl Host {
             let [x, y, z] = d.groups;
             list.Dispatch(x, y, z);
             for (r, size, n, rb) in &uavs {
-                // (Buffers were promoted from the common state by the dispatch.)
                 list.ResourceBarrier(&[transition(
                     r,
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
