@@ -472,6 +472,9 @@ pub fn native_programs(part: &[u8]) -> Result<Vec<NativeProgram>, ShaderError> {
 ///   0x43  the shader hash (16 B); the last record
 /// ```
 pub fn fspx_program(part: &[u8]) -> Result<NativeProgram, ShaderError> {
+    if !part.starts_with(b"FSPX") {
+        return Err(Malformed("missing FSPX magic"));
+    }
     if u32_at(part, 4)? != FSPX_VERSION {
         return Err(Malformed("unknown FSPX version"));
     }
@@ -479,6 +482,12 @@ pub fn fspx_program(part: &[u8]) -> Result<NativeProgram, ShaderError> {
     if count > MAX_XDAT_ENTRIES {
         return Err(Malformed("implausible FSPX entry count"));
     }
+    let size = u32_at(part, 12)? as usize;
+    let table_end = FSPX_HEADER + 16 * count;
+    let part = part
+        .get(..size)
+        .filter(|p| p.len() >= table_end)
+        .ok_or(Malformed("FSPX size disagrees with entry table"))?;
     let entry = |kind: u32| -> Result<&[u8], ShaderError> {
         for i in 0..count {
             let at = FSPX_HEADER + 16 * i;
@@ -1289,6 +1298,23 @@ pub(crate) mod tests {
         assert_eq!(p.used[2].root, RootType::ImmediateSampler);
         let wave64 = fspx(&code, 0, [64, 1, 1], false, &[]);
         assert!(native_programs(&wave64).unwrap()[0].wave64);
+    }
+
+    #[test]
+    fn fspx_parser_checks_magic_and_declared_size() {
+        let good = fspx(&[0x00, 0x00, 0x81, 0xBF], 0, [64, 1, 1], false, &[]);
+        assert!(fspx_program(&good).is_ok());
+        let mut bad = good.clone();
+        bad[0] = b'X';
+        assert!(fspx_program(&bad).is_err());
+        for size in [0, 16, good.len() as u32 - 1, good.len() as u32 + 1, u32::MAX] {
+            let mut bad = good.clone();
+            bad[12..16].copy_from_slice(&size.to_le_bytes());
+            assert!(fspx_program(&bad).is_err());
+        }
+        let mut padded = good;
+        padded.extend_from_slice(&[0; 16]);
+        assert!(fspx_program(&padded).is_ok());
     }
 
     #[test]

@@ -31,3 +31,5 @@ jobs:
       # Includes xtask's repository_passes_policy, the asset-policy check.
       - name: Tests
         run: cargo test --workspace --locked
+      - name: WAV diagnostics regression
+        run: cargo test -p victory-hle --all-features --locked wav_header_sizes_stay_in_range_and_frame_aligned
