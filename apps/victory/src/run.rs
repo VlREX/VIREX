@@ -121,7 +121,10 @@ pub fn run(
         .iter()
         .map(|m| m.dll.as_str())
         .collect();
-    let mapped: Vec<&str> = dlls.iter().map(|(name, _)| name.as_str()).collect();
+    let mapped: Vec<_> = dlls
+        .iter()
+        .map(|(name, dll)| (name.as_str(), dll.info().imports.as_slice()))
+        .collect();
     let absent = absent_title_dlls(&imported, &mapped, &wanted);
     if !absent.is_empty() {
         let message = format!(
@@ -306,19 +309,27 @@ fn title_dll(host: &victory_hle::HostPolicy, dll: &str) -> bool {
     !host.allows(dll) && !victory_hle::registry().iter().any(|m| m.serves(dll))
 }
 
-/// The DLLs among `imported` (the main image's static imports) that must
-/// come from the title's folder (`wanted`) but were not mapped from it:
-/// none of their imports can be bound. Each named once, case ignored.
+/// Finds unmapped title DLLs reachable from the main image's static imports.
+/// DLLs reached only through delay imports are optional for this check.
+/// Each required DLL is checked once, ignoring case, even in a cycle.
 #[cfg(any(windows, test))]
 fn absent_title_dlls(
     imported: &[&str],
-    mapped: &[&str],
+    mapped: &[(&str, &[victory_pe::ImportModule])],
     wanted: &dyn Fn(&str) -> bool,
 ) -> Vec<String> {
-    let mut absent: Vec<String> = Vec::new();
-    for &dll in imported {
-        let known = |list: &[&str]| list.iter().any(|m| m.eq_ignore_ascii_case(dll));
-        if wanted(dll) && !known(mapped) && !absent.iter().any(|a| a.eq_ignore_ascii_case(dll)) {
+    use std::collections::{HashSet, VecDeque};
+
+    let mut pending: VecDeque<_> = imported.iter().copied().collect();
+    let mut seen = HashSet::new();
+    let mut absent = Vec::new();
+    while let Some(dll) = pending.pop_front() {
+        if !wanted(dll) || !seen.insert(dll.to_ascii_lowercase()) {
+            continue;
+        }
+        if let Some((_, imports)) = mapped.iter().find(|(name, _)| name.eq_ignore_ascii_case(dll)) {
+            pending.extend(imports.iter().map(|module| module.dll.as_str()));
+        } else {
             absent.push(dll.to_owned());
         }
     }
@@ -470,7 +481,7 @@ mod absent_tests {
             "Bink2Scarlett.dll",
             "xboxbvhbuilder.dll",
         ];
-        let mapped = ["msvcp140.dll"];
+        let mapped = [("msvcp140.dll", &[][..])];
         assert_eq!(
             absent_title_dlls(&imported, &mapped, &wanted),
             ["XboxBvhBuilder.dll", "Bink2Scarlett.dll"]
@@ -478,9 +489,36 @@ mod absent_tests {
     }
 
     #[test]
+    fn only_reports_missing_dlls_in_the_static_dependency_chain() {
+        let module = |name: &str| victory_pe::ImportModule {
+            dll: name.into(),
+            entries: Vec::new(),
+        };
+        let bridge_imports = [module("Core.dll"), module("Host.dll")];
+        let core_imports = [
+            module("BRIDGE.dll"),
+            module("Missing.dll"),
+            module("MISSING.DLL"),
+        ];
+        let optional_imports = [module("OptionalMissing.dll")];
+        let mapped = [
+            ("bridge.dll", bridge_imports.as_slice()),
+            ("core.dll", core_imports.as_slice()),
+            ("optional.dll", optional_imports.as_slice()),
+        ];
+        let wanted = |dll: &str| !dll.eq_ignore_ascii_case("host.dll");
+
+        assert_eq!(
+            absent_title_dlls(&["Bridge.dll"], &mapped, &wanted),
+            ["Missing.dll"]
+        );
+    }
+
+    #[test]
     fn a_complete_package_has_nothing_absent() {
         let wanted = |dll: &str| dll.starts_with("Title");
-        assert!(absent_title_dlls(&["Title.dll", "Host.dll"], &["TITLE.DLL"], &wanted).is_empty());
+        let mapped = [("TITLE.DLL", &[][..])];
+        assert!(absent_title_dlls(&["Title.dll", "Host.dll"], &mapped, &wanted).is_empty());
         assert!(absent_title_dlls(&[], &[], &wanted).is_empty());
     }
 }
