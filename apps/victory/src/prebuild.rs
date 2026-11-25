@@ -44,6 +44,7 @@ pub fn run(paths: &[PathBuf], threads: usize) -> Result<()> {
         .iter()
         .flat_map(|root| {
             walkdir::WalkDir::new(root)
+                .sort_by_file_name()
                 .into_iter()
                 .filter_map(Result::ok)
         })
@@ -79,7 +80,7 @@ pub fn run(paths: &[PathBuf], threads: usize) -> Result<()> {
                             continue;
                         };
                         for (id, stage) in program_ids(&bytes) {
-                            lock(&programs).entry(id).or_insert((f, i, stage));
+                            record_program(&mut lock(&programs), id, (f, i, stage));
                         }
                     }
                 });
@@ -274,6 +275,14 @@ fn each(jobs: &[Job], threads: usize, f: impl Fn(Job) + Sync) {
     });
 }
 
+/// Prefer the first input and source, regardless of which worker finishes first.
+fn record_program(programs: &mut HashMap<[u8; 24], Found>, id: [u8; 24], candidate: Found) {
+    let found = programs.entry(id).or_insert(candidate);
+    if (candidate.0, candidate.1) < (found.0, found.1) {
+        *found = candidate;
+    }
+}
+
 /// The hash instructions each native program of a container starts with.
 fn program_ids(bytes: &[u8]) -> Vec<([u8; 24], HwStage)> {
     let Ok(c) = Container::parse(bytes) else {
@@ -293,4 +302,24 @@ fn program_ids(bytes: &[u8]) -> Vec<([u8; 24], HwStage)> {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_programs_follow_input_and_source_order() {
+        let id = [1; 24];
+        let first = (0, 2, HwStage::Ps);
+        let later_source = (0, 5, HwStage::Vs);
+        let later_file = (1, 0, HwStage::Cs);
+        for candidates in [[first, later_source, later_file], [later_file, later_source, first]] {
+            let mut programs = HashMap::new();
+            for candidate in candidates {
+                record_program(&mut programs, id, candidate);
+            }
+            assert_eq!(programs[&id], first);
+        }
+    }
 }
