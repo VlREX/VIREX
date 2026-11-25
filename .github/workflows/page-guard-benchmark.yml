@@ -1,0 +1,21 @@
+name: Synthetic page protection benchmark
+on:
+  pull_request:
+    branches: [perf/memory-guard-batching]
+    paths:
+      - 'benchmarks/page_guard.rs'
+      - '.github/workflows/page-guard-benchmark.yml'
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - run: rustc --version
+      - run: rustc --edition=2024 --test -O benchmarks/page_guard.rs -o page-tests.exe
+      - run: .\page-tests.exe
+      - run: rustc --edition=2024 -O benchmarks/page_guard.rs -o page-guard-bench.exe
+      - run: .\page-guard-bench.exe
