@@ -1,0 +1,21 @@
+name: Synthetic precise range benchmark
+on:
+  pull_request:
+    branches: [perf/indexed-copyback-ranges]
+    paths:
+      - 'benchmarks/precise_ranges.rs'
+      - '.github/workflows/precise-ranges-benchmark.yml'
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - run: rustc --version
+      - run: rustc --edition=2024 --test -O benchmarks/precise_ranges.rs -o precise-tests.exe
+      - run: .\precise-tests.exe
+      - run: rustc --edition=2024 -O benchmarks/precise_ranges.rs -o precise-bench.exe
+      - run: .\precise-bench.exe
