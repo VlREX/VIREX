@@ -15,6 +15,7 @@ enum TypeDef {
     Void,
     Int(u32),
     Float,
+    Half,
     /// Pointee and address space.
     Ptr(Ty, u32),
     Struct(Option<String>, Vec<Ty>),
@@ -232,6 +233,9 @@ impl Module {
     }
     pub fn float(&mut self) -> Ty {
         self.ty(TypeDef::Float)
+    }
+    pub fn half(&mut self) -> Ty {
+        self.ty(TypeDef::Half)
     }
     pub fn ptr(&mut self, to: Ty) -> Ty {
         self.ty(TypeDef::Ptr(to, 0))
@@ -513,12 +517,18 @@ impl Module {
     pub fn uses(&self) -> Uses {
         let plan = self.plan();
         let wide = |t: Ty| self.types[t.0 as usize] == TypeDef::Int(64);
+        let half = |t: Ty| self.types[t.0 as usize] == TypeDef::Half;
         let mut u = Uses::default();
         for b in plan.layout.iter().map(|&b| &self.blocks[b]) {
             for &i in b.phis.iter().chain(&b.body).filter(|&&i| plan.live[i as usize]) {
                 let inst = &self.insts[i as usize];
                 u.int64 |= wide(inst.ty);
-                for_each_operand(&inst.op, |v| u.int64 |= wide(self.type_of(v)));
+                u.half |= half(inst.ty);
+                for_each_operand(&inst.op, |v| {
+                    let ty = self.type_of(v);
+                    u.int64 |= wide(ty);
+                    u.half |= half(ty);
+                });
                 let Op::Call(f, args) = &inst.op else { continue };
                 let name = self.funcs[*f as usize].name.as_str();
                 if name.starts_with("dx.op.createHandleFromHeap") {
@@ -747,6 +757,7 @@ impl Module {
             match t {
                 TypeDef::Void => w.record(2, &[]),
                 TypeDef::Float => w.record(3, &[]),
+                TypeDef::Half => w.record(10, &[]),
                 TypeDef::Int(b) => w.record(7, &[u64::from(*b)]),
                 TypeDef::Ptr(p, space) => w.record(8, &[u64::from(p.0), u64::from(*space)]),
                 TypeDef::Array(n, e) => w.record(11, &[u64::from(*n), u64::from(e.0)]),
@@ -1022,6 +1033,8 @@ pub struct Uses {
     pub wave: bool,
     /// 64-bit integers.
     pub int64: bool,
+    /// 16-bit floating-point instructions.
+    pub half: bool,
 }
 
 /// What [`Module::write`] writes ([`Module::plan`]).

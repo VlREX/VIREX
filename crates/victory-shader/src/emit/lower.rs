@@ -90,9 +90,18 @@ enum Stop {
 }
 
 pub(crate) fn lower(parts: &Parts) -> Result<Lowered, ShaderError> {
+    lower_with_native_f16(parts, false)
+}
+
+/// The native path is exercised by opt-in semantic probes. The normal
+/// translator uses software narrowing until exceptional inputs agree across hosts.
+pub(crate) fn lower_with_native_f16(
+    parts: &Parts,
+    native_f16: bool,
+) -> Result<Lowered, ShaderError> {
     let mut bad = HashMap::new();
     loop {
-        match Lower::new(parts, &bad).run() {
+        match Lower::new(parts, &bad, native_f16).run() {
             Ok(l) => return Ok(l),
             Err(Stop::Retry(v, why)) => {
                 if bad.insert(v, why).is_some() {
@@ -180,6 +189,7 @@ struct Lower<'a> {
     s: Shader,
     x: &'a Parts<'a>,
     bad: &'a HashMap<Value, Why>,
+    native_f16: bool,
     lane_fail: HashMap<Value, Why>,
     vals: HashMap<Value, Val>,
     floats: HashMap<Value, V>,
@@ -518,7 +528,7 @@ fn smem_dwords(name: &str) -> Option<u32> {
 }
 
 impl<'a> Lower<'a> {
-    fn new(x: &'a Parts<'a>, bad: &'a HashMap<Value, Why>) -> Self {
+    fn new(x: &'a Parts<'a>, bad: &'a HashMap<Value, Why>, native_f16: bool) -> Self {
         let p = x.p;
         let mut phi_at = HashMap::new();
         for (b, block) in p.blocks.iter().enumerate() {
@@ -630,6 +640,7 @@ impl<'a> Lower<'a> {
             s,
             x,
             bad,
+            native_f16,
             lane_fail: HashMap::new(),
             vals: HashMap::new(),
             floats: HashMap::new(),
@@ -6703,6 +6714,34 @@ impl<'a> Lower<'a> {
             return float_result(self, f);
         }
         if float2.contains(&name) {
+            let native_op = match name {
+                "v_add_f16" => Some((Bin::Add, 0, 1)),
+                "v_sub_f16" => Some((Bin::Sub, 0, 1)),
+                "v_subrev_f16" => Some((Bin::Sub, 1, 0)),
+                "v_mul_f16" => Some((Bin::Mul, 0, 1)),
+                _ => None,
+            };
+            if self.native_f16
+                && self.mode16 == Some(0)
+                && v.abs == 0
+                && v.neg == 0
+                && v.omod == 0
+                && !v.clamp
+                && let Some((op, left, right)) = native_op
+            {
+                let a = self.half_src(inst, left)?;
+                let b = self.half_src(inst, right)?;
+                let i16t = self.s.m.int(16);
+                let half = self.s.m.half();
+                let a = self.s.m.cast(c, Cast::Trunc, a, i16t);
+                let b = self.s.m.cast(c, Cast::Trunc, b, i16t);
+                let a = self.s.m.cast(c, Cast::Bitcast, a, half);
+                let b = self.s.m.cast(c, Cast::Bitcast, b, half);
+                let result = self.s.m.bin(c, op, a, b);
+                let result = self.s.m.cast(c, Cast::Bitcast, result, i16t);
+                let result = self.s.m.cast(c, Cast::ZExt, result, i32t);
+                return self.write_half(inst, result, guard);
+            }
             let (a, b) = (self.half_fsrc(inst, 0)?, self.half_fsrc(inst, 1)?);
             let r = match name {
                 "v_add_f16" => self.s.m.bin(c, Bin::Add, a, b),

@@ -248,6 +248,13 @@ fn program(body: &[u32], scalar: bool) -> Vec<u32> {
 /// bytes of LDS; one view table at s4 (the input buffer, then the output
 /// UAV), the group id in s6.
 fn lower_program(words: &[u32]) -> Result<HostShader, String> {
+    lower_program_with_native_f16(words, false)
+}
+
+fn lower_program_with_native_f16(
+    words: &[u32],
+    native_f16: bool,
+) -> Result<HostShader, String> {
     let used = |kind, table_offset_dwords| UsedResource {
         kind,
         root: RootType::Table,
@@ -282,7 +289,7 @@ fn lower_program(words: &[u32]) -> Result<HostShader, String> {
     let st = structure::structure(&p).map_err(e)?;
     let res = resource::track(&p, &native.layout, native.stage, Some(&st)).map_err(e)?;
     let io = io::raise(&p, &native).map_err(e)?;
-    let lowered = lower::lower(&lower::Parts {
+    let parts = lower::Parts {
         native: &native,
         p: &p,
         st: &st,
@@ -293,8 +300,8 @@ fn lower_program(words: &[u32]) -> Result<HostShader, String> {
         prims: Vec::new(),
         mesh_stride: 0,
         view_marks: false,
-    })
-    .map_err(e)?;
+    };
+    let lowered = lower::lower_with_native_f16(&parts, native_f16).map_err(e)?;
     Ok(HostShader {
         stage: HwStage::Cs,
         dxil: lowered.dxil,
@@ -2778,6 +2785,69 @@ fn min_max_and_selects_take_denormals_on_the_bits() {
     let mut p = min_max_probes();
     p.extend(select_probes());
     defect(p, DENORMAL);
+}
+
+/// Native half arithmetic must carry the feature bit and agree with the
+/// software lowering on finite inputs. NaN payloads are adapter-specific.
+#[test]
+fn native_f16_binary_arithmetic_matches_software_for_finite_inputs() {
+    use windows::Win32::Graphics::Direct3D12::{
+        D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_DATA_D3D12_OPTIONS4,
+    };
+
+    const NATIVE_16_BIT: u64 = 0x4_0000;
+    let feature_bits = |shader: &HostShader| {
+        let container = crate::Container::parse(&shader.dxil).expect("DXIL container");
+        let flags = container.part(crate::FourCC::SFI0).expect("SFI0");
+        u64::from_le_bytes(flags.data.try_into().expect("SFI0 feature bits"))
+    };
+
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let hosts: Vec<_> = [("hardware", false), ("warp", true)]
+        .into_iter()
+        .filter_map(|(label, warp)| {
+            let host = Host::new(warp).ok()?;
+            let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS4::default();
+            // SAFETY: OPTIONS4 writes a structure of the size passed here.
+            let supported = unsafe {
+                host.device.CheckFeatureSupport(
+                    D3D12_FEATURE_D3D12_OPTIONS4,
+                    (&raw mut options).cast(),
+                    size_of_val(&options) as u32,
+                )
+            }
+            .is_ok()
+                && options.Native16BitShaderOpsSupported.as_bool();
+            supported.then_some((label, host))
+        })
+        .collect();
+    let inputs: Vec<_> = half_pairs()
+        .into_iter()
+        .filter(|input| h(input[0]).is_finite() && h(input[1]).is_finite())
+        .collect();
+    assert!(!inputs.is_empty());
+
+    let mut validator = validator::Validator::load(validator::Validator::default_path().as_deref());
+    for opcode in [0x32, 0x33, 0x35] {
+        let words = program(&[vop2(opcode, 5, v(1), 2)], false);
+        let software = lower_program(&words).expect("software f16 lowering");
+        let native = lower_program_with_native_f16(&words, true).expect("native f16 lowering");
+        assert_eq!(feature_bits(&software) & NATIVE_16_BIT, 0);
+        assert_ne!(feature_bits(&native) & NATIVE_16_BIT, 0);
+        if let Ok(validator) = validator.as_mut() {
+            validator
+                .validate(&mut native.dxil.clone())
+                .expect("native f16 DXIL validation");
+        }
+        for (label, host) in &hosts {
+            let expected = run(host, &software, &inputs, false).expect("software f16 dispatch");
+            let actual = run(host, &native, &inputs, false).expect("native f16 dispatch");
+            assert_eq!(actual.len(), expected.len());
+            for ((input, got), want) in inputs.iter().zip(actual).zip(expected) {
+                assert_eq!(got, want, "{label}, opcode {opcode:#x}, input {input:08x?}");
+            }
+        }
+    }
 }
 
 /// f16 results round to nearest even, the console's default mode (toward
