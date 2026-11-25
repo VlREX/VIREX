@@ -2794,8 +2794,8 @@ fn report_native_f16(args: std::fmt::Arguments<'_>) {
     writeln!(std::io::stdout().lock(), "{args}").expect("write native f16 probe coverage");
 }
 
-/// Native half arithmetic must agree with the software path on ordinary
-/// values and on NaN classification. Report NaN bit differences separately.
+/// Guarded native half arithmetic must match the software path bit for bit,
+/// including signed zeros, subnormals and the entire NaN payload.
 #[test]
 fn native_f16_binary_arithmetic_reports_backend_coverage() {
     use windows::Win32::Graphics::Direct3D12::{
@@ -2873,20 +2873,13 @@ fn native_f16_binary_arithmetic_reports_backend_coverage() {
             assert_eq!(actual.len(), inputs.len());
             assert_eq!(expected.len(), inputs.len());
             let mut nan_count = 0;
-            let mut differing_nan_bits = 0;
-            for ((input, mut got), want) in inputs.iter().zip(actual).zip(expected) {
-                if is_nan(want[0]) {
-                    assert!(is_nan(got[0]), "{label}, {op}, input {input:08x?}, got {got:08x?}");
-                    nan_count += 1;
-                    differing_nan_bits += usize::from((got[0] ^ want[0]) & 0xFFFF != 0);
-                    // Still compare the preserved upper half and the other outputs.
-                    got[0] = got[0] & 0xFFFF_0000 | want[0] & 0xFFFF;
-                }
+            for ((input, got), want) in inputs.iter().zip(actual).zip(expected) {
+                nan_count += usize::from(is_nan(want[0]));
                 assert_eq!(got, want, "{label}, {op}, input {input:08x?}");
             }
+            assert!(nan_count > 0, "{op} must exercise the NaN fallback");
             report_native_f16(format_args!(
-                "native f16 {label} {op}: {} non-NaN results match, {nan_count} NaNs, \
-                 {differing_nan_bits} NaN bit differences",
+                "native f16 {label} {op}: {} non-NaN results and {nan_count} NaN bit patterns match",
                 inputs.len() - nan_count
             ));
         }

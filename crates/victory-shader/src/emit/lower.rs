@@ -94,7 +94,7 @@ pub(crate) fn lower(parts: &Parts) -> Result<Lowered, ShaderError> {
 }
 
 /// The native path is exercised by opt-in semantic probes. The normal
-/// translator uses software narrowing until exceptional inputs agree across hosts.
+/// translator uses software narrowing until the guarded path is measured on hardware.
 pub(crate) fn lower_with_native_f16(
     parts: &Parts,
     native_f16: bool,
@@ -6553,16 +6553,24 @@ impl<'a> Lower<'a> {
         Ok(self.s.m.bin(c, Bin::And, x, m))
     }
 
+    fn widen_half(&mut self, h: V) -> V {
+        self.s.op(
+            self.cur,
+            "legacyF16ToF32",
+            Attr::ReadNone,
+            self.s.t.f32,
+            131,
+            &[h],
+        )
+    }
+
     /// An f16 source as an f32 (exact), with its abs/neg modifiers.
     fn half_fsrc(&mut self, inst: &Inst, k: usize) -> Result<V, Why> {
         let Fields::Valu(v) = &inst.fields else {
             unreachable!()
         };
         let h = self.half_src(inst, k)?;
-        let f32t = self.s.t.f32;
-        let mut f = self
-            .s
-            .op(self.cur, "legacyF16ToF32", Attr::ReadNone, f32t, 131, &[h]);
+        let mut f = self.widen_half(h);
         if v.abs >> k & 1 != 0 {
             f = self.unary(6, f);
         }
@@ -6571,6 +6579,32 @@ impl<'a> Lower<'a> {
             f = self.s.m.bin(self.cur, Bin::Sub, z, f);
         }
         Ok(f)
+    }
+
+    /// Native arithmetic gives ordinary half results directly. For NaNs use
+    /// the software path so the host's native NaN payload choice does not
+    /// change the bits returned by the existing translation.
+    fn native_f16_bin(&mut self, op: Bin, left: V, right: V) -> V {
+        let c = self.cur;
+        let i16t = self.s.m.int(16);
+        let half = self.s.m.half();
+        let a = self.s.m.cast(c, Cast::Trunc, left, i16t);
+        let b = self.s.m.cast(c, Cast::Trunc, right, i16t);
+        let a = self.s.m.cast(c, Cast::Bitcast, a, half);
+        let b = self.s.m.cast(c, Cast::Bitcast, b, half);
+        let native = self.s.m.bin(c, op, a, b);
+        let native = self.s.m.cast(c, Cast::Bitcast, native, i16t);
+        let native = self.s.m.cast(c, Cast::ZExt, native, self.s.t.i32);
+
+        let (abs, infinity) = (self.s.m.i32(0x7FFF), self.s.m.i32(0x7C00));
+        let magnitude = self.s.m.bin(c, Bin::And, native, abs);
+        let nan = self.s.m.cmp(c, pred::IUGT, magnitude, infinity);
+        let branch = self.begin_guarded(Some(nan));
+        let a = self.widen_half(left);
+        let b = self.widen_half(right);
+        let wide = self.s.m.bin(self.cur, op, a, b);
+        let software = self.narrow16(wide);
+        self.end_guarded(branch, &[(software, native)])[0]
     }
 
     /// Writes a 16-bit result (low bits of `x`) into the destination's low
@@ -6731,15 +6765,7 @@ impl<'a> Lower<'a> {
             {
                 let a = self.half_src(inst, left)?;
                 let b = self.half_src(inst, right)?;
-                let i16t = self.s.m.int(16);
-                let half = self.s.m.half();
-                let a = self.s.m.cast(c, Cast::Trunc, a, i16t);
-                let b = self.s.m.cast(c, Cast::Trunc, b, i16t);
-                let a = self.s.m.cast(c, Cast::Bitcast, a, half);
-                let b = self.s.m.cast(c, Cast::Bitcast, b, half);
-                let result = self.s.m.bin(c, op, a, b);
-                let result = self.s.m.cast(c, Cast::Bitcast, result, i16t);
-                let result = self.s.m.cast(c, Cast::ZExt, result, i32t);
+                let result = self.native_f16_bin(op, a, b);
                 return self.write_half(inst, result, guard);
             }
             let (a, b) = (self.half_fsrc(inst, 0)?, self.half_fsrc(inst, 1)?);
