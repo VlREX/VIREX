@@ -1191,6 +1191,84 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "release-only synthetic loop discovery benchmark"]
+    fn bench_scc_loop_discovery() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        for n in [32usize, 128, 512, 2048] {
+            for kind in ["acyclic", "late_multi_entry", "nested_multi_entry"] {
+                let mut exits: Vec<Exit> = (1..n).map(Exit::Jump).collect();
+                exits.push(Exit::End);
+                match kind {
+                    "acyclic" => {}
+                    "late_multi_entry" => {
+                        exits[n - 3] = Exit::Branch {
+                            taken: n - 2,
+                            not_taken: n - 1,
+                        };
+                        exits[n - 1] = Exit::Jump(n - 2);
+                    }
+                    "nested_multi_entry" => {
+                        exits[n - 4] = Exit::Jump(n - 3);
+                        exits[n - 3] = Exit::Branch {
+                            taken: n - 2,
+                            not_taken: n - 1,
+                        };
+                        exits[n - 1] = Exit::Branch {
+                            taken: n - 2,
+                            not_taken: n - 3,
+                        };
+                    }
+                    _ => unreachable!(),
+                }
+                let blocks = graph(exits);
+                let inside = vec![true; n];
+                let reference = reference_multi_entry_loop(&blocks, &inside);
+                let expected_entries = if kind == "acyclic" {
+                    None
+                } else {
+                    Some(vec![n - 2, n - 1])
+                };
+                assert_eq!(reference.as_ref().map(|(_, e)| e.clone()), expected_entries);
+                assert_eq!(multi_entry_loop(&blocks, &inside), reference);
+                let repeats = (4096 / n).max(2);
+                let mut old_times = Vec::new();
+                let mut new_times = Vec::new();
+                let measure = |old: bool| {
+                    let start = Instant::now();
+                    for _ in 0..repeats {
+                        let b = black_box(blocks.as_slice());
+                        let i = black_box(inside.as_slice());
+                        black_box(if old {
+                            reference_multi_entry_loop(b, i)
+                        } else {
+                            multi_entry_loop(b, i)
+                        });
+                    }
+                    start.elapsed().as_secs_f64() * 1e6 / repeats as f64
+                };
+                for round in 0..7 {
+                    if round % 2 == 0 {
+                        old_times.push(measure(true));
+                        new_times.push(measure(false));
+                    } else {
+                        new_times.push(measure(false));
+                        old_times.push(measure(true));
+                    }
+                }
+                old_times.sort_by(f64::total_cmp);
+                new_times.sort_by(f64::total_cmp);
+                println!(
+                    "kind={kind} blocks={n} reference_us={:.3} scc_us={:.3} speedup={:.3}",
+                    old_times[3], new_times[3], old_times[3] / new_times[3]
+                );
+            }
+        }
+        println!("PASS: 12 synthetic CFG configurations matched the reference");
+    }
+
+    #[test]
     fn scc_loop_discovery_matches_the_reference() {
         // All three-block directed graphs representable by the IR's
         // zero/one/two successor exits, including every induced subgraph.
