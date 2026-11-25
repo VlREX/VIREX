@@ -133,6 +133,12 @@ fn explicit_config_path(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Opt
 }
 
 fn subdir(root: &Path, sub: &str) -> Result<PathBuf> {
+    let sub = Path::new(sub);
+    // Joining an absolute path replaces the root; parent components can escape it.
+    anyhow::ensure!(
+        sub.components().all(|c| matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir)),
+        "subdirectory must be relative and must not contain parent components"
+    );
     let dir = root.join(sub);
     ensure_outside_repo(&dir)?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
