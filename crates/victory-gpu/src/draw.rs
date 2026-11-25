@@ -2133,6 +2133,12 @@ void main(uint3 id : SV_DispatchThreadID) {
             };
             let a = crate::resource::host_copy(object).unwrap();
             let b = crate::resource::host_copy(placed as This).unwrap();
+            // Probe the copy fallback on runtimes without Device10, while
+            // retaining the shared-resource expectation on newer runtimes.
+            use windows::core::Interface;
+            let device10 = host.device.cast::<ID3D12Device10>().is_ok();
+            let shared = shared && device10;
+            eprintln!("CAST_TEST round={round} device10={device10} expected_shared={shared}");
             assert_eq!(std::sync::Arc::ptr_eq(&a, &b), shared, "round {round}: one host texture");
             let unordered = View::Unordered(object as usize, 0, Some([written, 4, 0, 0, 0, 0, 0, 0, 0, 0]));
             slots.make(0, &unordered);
