@@ -1994,10 +1994,11 @@ impl Host {
                 back.Map(0, None, Some(&mut p)).map_err(err)?;
                 let ticks = std::slice::from_raw_parts(p.cast::<u64>(), count as usize);
                 let intervals: Result<Vec<_>, _> = ticks
-                    .chunks_exact(2)
-                    .map(|pair| {
-                        pair[1]
-                            .checked_sub(pair[0])
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&[start, end]| {
+                        end.checked_sub(start)
                             .map(|delta| {
                                 std::time::Duration::from_secs_f64(delta as f64 / frequency as f64)
                             })
