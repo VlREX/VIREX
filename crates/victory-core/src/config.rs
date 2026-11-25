@@ -220,6 +220,19 @@ mod tests {
     }
 
     #[test]
+    fn cache_subdir_rejects_paths_outside_its_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        let cfg = Config { cache_dir: root.clone(), ..Default::default() };
+        assert_eq!(cfg.cache_subdir("a/b").unwrap(), root.join("a/b"));
+        let outside = tmp.path().join("outside");
+        assert!(cfg.cache_subdir("../outside").is_err());
+        assert!(cfg.cache_subdir(outside.to_str().unwrap()).is_err());
+        assert!(!outside.exists());
+    }
+
+    #[test]
     fn cache_inside_repo_is_refused() {
         let inside = Path::new(env!("CARGO_MANIFEST_DIR")).join("cache");
         let cfg = Config {
