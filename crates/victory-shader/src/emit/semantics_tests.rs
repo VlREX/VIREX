@@ -2787,10 +2787,17 @@ fn min_max_and_selects_take_denormals_on_the_bits() {
     defect(p, DENORMAL);
 }
 
-/// Native half arithmetic must carry the feature bit and agree with the
-/// software lowering on finite inputs. NaN payloads are adapter-specific.
+// Write directly to the runner log so successful tests show which
+// backends actually dispatched the shader under Rust's test harness.
+fn report_native_f16(args: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+    writeln!(std::io::stdout().lock(), "{args}").expect("write native f16 probe coverage");
+}
+
+/// Native half arithmetic must agree with the software path on ordinary
+/// values and on NaN classification. Report NaN bit differences separately.
 #[test]
-fn native_f16_binary_arithmetic_matches_software_for_finite_inputs() {
+fn native_f16_binary_arithmetic_reports_backend_coverage() {
     use windows::Win32::Graphics::Direct3D12::{
         D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_DATA_D3D12_OPTIONS4,
     };
@@ -2803,33 +2810,54 @@ fn native_f16_binary_arithmetic_matches_software_for_finite_inputs() {
     };
 
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let hosts: Vec<_> = [("hardware", false), ("warp", true)]
+    let warp_only = std::env::var("VICTORY_WARP").is_ok_and(|v| v == "1");
+    let hosts: Vec<_> = [("hardware", false), ("WARP", true)]
         .into_iter()
+        .filter(|&(_, warp)| warp || !warp_only)
         .filter_map(|(label, warp)| {
-            let host = Host::new(warp).ok()?;
+            let host = match Host::new(warp) {
+                Ok(host) => host,
+                Err(error) => {
+                    report_native_f16(format_args!("native f16 {label}: skipped ({error})"));
+                    return None;
+                }
+            };
             let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS4::default();
             // SAFETY: OPTIONS4 writes a structure of the size passed here.
-            let supported = unsafe {
+            let query = unsafe {
                 host.device.CheckFeatureSupport(
                     D3D12_FEATURE_D3D12_OPTIONS4,
                     (&raw mut options).cast(),
                     size_of_val(&options) as u32,
                 )
+            };
+            if let Err(error) = query {
+                report_native_f16(format_args!("native f16 {label}: OPTIONS4 query failed ({error})"));
+                return None;
             }
-            .is_ok()
-                && options.Native16BitShaderOpsSupported.as_bool();
-            supported.then_some((label, host))
+            if !options.Native16BitShaderOpsSupported.as_bool() {
+                report_native_f16(format_args!("native f16 {label}: adapter reports no native f16 support"));
+                return None;
+            }
+            Some((label, host))
         })
         .collect();
-    let inputs: Vec<_> = half_pairs()
-        .into_iter()
-        .filter(|input| h(input[0]).is_finite() && h(input[1]).is_finite())
-        .collect();
-    assert!(!inputs.is_empty());
+    let inputs = half_pairs();
+    let is_nan = |bits: u32| bits & 0x7FFF > 0x7C00;
+
+    // A guest MODE change to round-toward-zero still uses software.
+    let rounded_to_zero = program(&[0xBA80_0881, 3, vop2(0x32, 5, v(1), 2)], false);
+    let software = lower_program(&rounded_to_zero).expect("software round-toward-zero");
+    let candidate =
+        lower_program_with_native_f16(&rounded_to_zero, true).expect("retained round-toward-zero");
+    assert_eq!(candidate.dxil, software.dxil);
+    assert_eq!(feature_bits(&candidate) & NATIVE_16_BIT, 0);
 
     let mut validator = validator::Validator::load(validator::Validator::default_path().as_deref());
-    for opcode in [0x32, 0x33, 0x35] {
+    report_native_f16(format_args!("native f16 DXIL validator loaded: {}", validator.is_ok()));
+    for (opcode, op) in [(0x32, "add"), (0x33, "sub"), (0x34, "subrev"), (0x35, "mul")] {
         let words = program(&[vop2(opcode, 5, v(1), 2)], false);
+        assert!(disassembly(&[vop2(opcode, 5, v(1), 2)], false).contains(&format!("v_{op}_f16")));
         let software = lower_program(&words).expect("software f16 lowering");
         let native = lower_program_with_native_f16(&words, true).expect("native f16 lowering");
         assert_eq!(feature_bits(&software) & NATIVE_16_BIT, 0);
@@ -2842,10 +2870,25 @@ fn native_f16_binary_arithmetic_matches_software_for_finite_inputs() {
         for (label, host) in &hosts {
             let expected = run(host, &software, &inputs, false).expect("software f16 dispatch");
             let actual = run(host, &native, &inputs, false).expect("native f16 dispatch");
-            assert_eq!(actual.len(), expected.len());
-            for ((input, got), want) in inputs.iter().zip(actual).zip(expected) {
-                assert_eq!(got, want, "{label}, opcode {opcode:#x}, input {input:08x?}");
+            assert_eq!(actual.len(), inputs.len());
+            assert_eq!(expected.len(), inputs.len());
+            let mut nan_count = 0;
+            let mut differing_nan_bits = 0;
+            for ((input, mut got), want) in inputs.iter().zip(actual).zip(expected) {
+                if is_nan(want[0]) {
+                    assert!(is_nan(got[0]), "{label}, {op}, input {input:08x?}, got {got:08x?}");
+                    nan_count += 1;
+                    differing_nan_bits += usize::from((got[0] ^ want[0]) & 0xFFFF != 0);
+                    // Still compare the preserved upper half and the other outputs.
+                    got[0] = got[0] & 0xFFFF_0000 | want[0] & 0xFFFF;
+                }
+                assert_eq!(got, want, "{label}, {op}, input {input:08x?}");
             }
+            report_native_f16(format_args!(
+                "native f16 {label} {op}: {} non-NaN results match, {nan_count} NaNs, \
+                 {differing_nan_bits} NaN bit differences",
+                inputs.len() - nan_count
+            ));
         }
     }
 }
