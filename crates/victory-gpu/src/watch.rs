@@ -1222,4 +1222,52 @@ pub(crate) mod tests {
         drop(writing(top, PAGE));
         title_memory_remapped(top, usize::MAX);
     }
+
+    /// Diagnostic reproduction of the documented unreported release/reuse gap.
+    /// Run this alone: the reservation is released and recreated at its address.
+    #[test]
+    #[ignore = "diagnostic: checks a documented limitation before a fix"]
+    fn reused_virtual_address_must_be_seen_by_existing_tracker() {
+        let p = pool(1);
+        // SAFETY: our committed page.
+        unsafe { (p as *mut u8).write_volatile(0x11) };
+        let t = track(p, PAGE, true).expect("tracked");
+        assert_eq!(t.take(p, p + PAGE), [(p, p + PAGE)]);
+        assert!(t.clean());
+
+        // Same kind of release used by XMemFreeDefault for 32-bit allocations.
+        // SAFETY: our reservation, not used by another test.
+        assert_ne!(unsafe { VirtualFree(p as *mut _, 0, MEM_RELEASE) }, 0);
+        // SAFETY: ask the OS for a new reservation at the old address.
+        let replacement = unsafe {
+            VirtualAlloc(
+                p as *const _,
+                PAGE,
+                MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH,
+                PAGE_READWRITE,
+            )
+        } as usize;
+        if replacement != p {
+            drop(t);
+            if replacement != 0 {
+                free(replacement);
+            }
+            panic!("fixture could not reserve the same virtual address");
+        }
+        // SAFETY: the new committed allocation is ours.
+        unsafe { (p as *mut u8).write_volatile(0x22) };
+        let missed = t.clean();
+        let before = t.take(p, p + PAGE);
+        // Positive control: the actual runtime notification restores tracking.
+        title_memory_remapped(p, PAGE);
+        let after = t.take(p, p + PAGE);
+        drop(t);
+        free(p);
+        assert_eq!(after, [(p, p + PAGE)], "notification control");
+        assert!(
+            !missed && before == [(p, p + PAGE)],
+            "new allocation was invisible: clean={missed}, taken={before:?}"
+        );
+    }
+
 }
