@@ -248,5 +248,6 @@ mod tests {
         };
         assert_eq!(secs("30, 5,x,-2,inf,NaN,1e20"), [0.0, 5.0, 30.0]);
         assert!(schedule("").is_empty());
+        assert!(schedule("-inf,inf,NaN").is_empty());
     }
 }
