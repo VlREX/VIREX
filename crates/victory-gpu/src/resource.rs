@@ -1184,6 +1184,8 @@ fn make_texture(d: &ResourceDesc, state: u32, clear: *const c_void) -> Option<Ho
     let mut texture: Option<ID3D12Resource> = None;
     let mut castable_formats = if d.flags & DEPTH == 0 { castable(d.format) } else { Vec::new() };
     let mut initial = crate::host::legal_for(d.flags, crate::host::texture_state(state));
+    #[cfg(test)]
+    eprintln!("CAST_PROBE format={} flags={:#x} requested={:?} device10_error={:?}", d.format, d.flags, castable_formats, host.device.cast::<ID3D12Device10>().err());
     if !castable_formats.is_empty()
         && let Ok(device) = host.device.cast::<ID3D12Device10>()
     {
@@ -1219,6 +1221,8 @@ fn make_texture(d: &ResourceDesc, state: u32, clear: *const c_void) -> Option<Ho
             )
         };
         if let Err(e) = made {
+            #[cfg(test)]
+            eprintln!("CAST_PROBE CreateCommittedResource3 rejected: {e:?}");
             static ONCE: std::sync::Once = std::sync::Once::new();
             ONCE.call_once(|| {
                 tracing::warn!(error = %e, desc = ?d, "the host refuses castable formats: textures of one memory in other formats get their own host texture");
@@ -1253,6 +1257,8 @@ fn make_texture(d: &ResourceDesc, state: u32, clear: *const c_void) -> Option<Ho
         format!("texture {}x{} f{} flags {:#x} @{:#x}", d.width, d.height, d.format, d.flags, texture.as_raw() as usize)
     });
     let initial = crate::host::legal_state(&texture, initial);
+    #[cfg(test)]
+    eprintln!("CAST_PROBE format={} accepted={:?}", d.format, castable_formats);
     Some(HostTexture::new(texture, initial, castable_formats))
 }
 
