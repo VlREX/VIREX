@@ -93,7 +93,9 @@ pub fn child() -> bool {
 }
 
 fn header(frames: u64) -> [u8; 44] {
-    let data = u32::try_from(frames * FRAME_BYTES as u64).unwrap_or(u32::MAX - 36);
+    // RIFF's size includes 36 bytes of overhead; keep the data frame-aligned.
+    let max_frames = u64::from(u32::MAX - 36) / FRAME_BYTES as u64;
+    let data = (frames.min(max_frames) * FRAME_BYTES as u64) as u32;
     let mut h = [0u8; 44];
     let fields: [(&[u8], usize); 11] = [
         (b"RIFF", 0),
@@ -224,6 +226,31 @@ fn record(pid: u32, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             if ended {
                 return Ok(());
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wav_header_sizes_stay_in_range_and_frame_aligned() {
+        let max_frames = u64::from(u32::MAX - 36) / FRAME_BYTES as u64;
+        for (frames, expected) in [
+            (0, 0),
+            (1, FRAME_BYTES as u32),
+            (max_frames - 1, ((max_frames - 1) * FRAME_BYTES as u64) as u32),
+            (max_frames, (max_frames * FRAME_BYTES as u64) as u32),
+            (max_frames + 1, (max_frames * FRAME_BYTES as u64) as u32),
+            (u64::MAX, (max_frames * FRAME_BYTES as u64) as u32),
+        ] {
+            let bytes = header(frames);
+            let riff = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+            let data = u32::from_le_bytes(bytes[40..44].try_into().unwrap());
+            assert_eq!(data, expected);
+            assert_eq!(riff, 36 + expected);
+            assert_eq!(data % FRAME_BYTES as u32, 0);
         }
     }
 }

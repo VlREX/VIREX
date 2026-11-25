@@ -166,12 +166,15 @@ fn record(file: &[u8], at: usize) -> Option<Record<'_>> {
 
 /// The printable name that ends at `nul` and follows its length byte.
 fn name_before(file: &[u8], nul: usize) -> Option<&str> {
-    let run = file[..nul]
+    // A u8 length includes the terminator, so no candidate can start
+    // more than 255 bytes before it. Avoid rescanning an archive prefix.
+    let start = nul.saturating_sub(usize::from(u8::MAX));
+    let run = file[start..nul]
         .iter()
         .rposition(|b| !b.is_ascii_graphic())
-        .map_or(0, |p| p + 1);
+        .map_or(start, |p| start + p + 1);
     // From 32 characters on, the length byte is printable too.
-    (run.saturating_sub(1)..nul)
+    (run.saturating_sub(1).max(start)..nul)
         .find(|&l| usize::from(file[l]) == nul - l)
         .and_then(|l| std::str::from_utf8(&file[l + 1..nul]).ok())
 }
@@ -393,6 +396,20 @@ mod tests {
         }
         out.extend_from_slice(&packed);
         out
+    }
+
+    #[test]
+    fn finds_names_at_the_u8_length_limit() {
+        for len in [1usize, 30, 31, 32, 127, 254] {
+            let mut bytes = vec![b'!'; 4096];
+            bytes.push((len + 1) as u8);
+            let name = "Z".repeat(len);
+            bytes.extend_from_slice(name.as_bytes());
+            assert_eq!(name_before(&bytes, bytes.len()), Some(name.as_str()));
+        }
+        let bytes = vec![b'x'; 4096];
+        // The last 120 bytes can describe a name in an all-printable run.
+        assert_eq!(name_before(&bytes, bytes.len()).unwrap().len(), 119);
     }
 
     #[test]
