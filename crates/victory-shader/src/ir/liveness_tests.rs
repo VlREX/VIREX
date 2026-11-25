@@ -136,3 +136,114 @@ fn generated_control_flow_matches_path_oracle() {
         check(exits, uses, defs);
     }
 }
+
+
+// Original fixed-point sweep from baseline 13f91ca, after use/def construction.
+fn reference_sweep(
+    blocks: &[Block],
+    order: &[usize],
+    uses: &[RegSet],
+    defs: &[RegSet],
+) -> (Vec<RegSet>, Vec<RegSet>) {
+    let empty = [0; REGS.div_ceil(64)];
+    let mut live_in = vec![empty; blocks.len()];
+    let mut live_out = vec![empty; blocks.len()];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &b in order.iter().rev() {
+            let mut out = empty;
+            for s in blocks[b].exit.successors() {
+                for (o, i) in out.iter_mut().zip(&live_in[s]) {
+                    *o |= i;
+                }
+            }
+            let mut inn = empty;
+            for w in 0..inn.len() {
+                inn[w] = uses[b][w] | out[w] & !defs[b][w];
+            }
+            if inn != live_in[b] || out != live_out[b] {
+                (live_in[b], live_out[b]) = (inn, out);
+                changed = true;
+            }
+        }
+    }
+    (live_in, live_out)
+}
+
+#[test]
+#[ignore = "release-only synthetic liveness benchmark"]
+fn bench_liveness_worklist() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    for n in [32usize, 128, 512, 2048] {
+        for kind in ["straight", "local_loops", "long_loop"] {
+            let mut blocks: Vec<_> = (0..n)
+                .map(|b| {
+                    let exit = if b + 1 == n {
+                        Exit::End
+                    } else if kind == "long_loop" && b + 2 == n {
+                        Exit::Branch { taken: 0, not_taken: b + 1 }
+                    } else if kind == "local_loops" && b % 16 == 15 {
+                        Exit::Branch { taken: b - 7, not_taken: b + 1 }
+                    } else {
+                        Exit::Jump(b + 1)
+                    };
+                    Block {
+                        offset: b,
+                        preds: Vec::new(),
+                        phis: Vec::new(),
+                        insts: Vec::new(),
+                        exit,
+                    }
+                })
+                .collect();
+            link(&mut blocks);
+            let order = reverse_postorder(&blocks);
+            assert_eq!(order.len(), n);
+            let uses: Vec<_> = (0..n)
+                .map(|b| mask(if b % 17 == 0 { 1 << ((b / 17) % 16) } else { 0 }))
+                .collect();
+            let defs: Vec<_> = (0..n)
+                .map(|b| mask(if b % 29 == 0 { 1 << ((b / 29 + 3) % 16) } else { 0 }))
+                .collect();
+            let expected = reference_sweep(&blocks, &order, &uses, &defs);
+            assert_eq!(solve_liveness(&blocks, &order, &uses, &defs), expected);
+            let repeats = (32768 / n).max(8);
+            let measure = |reference: bool| {
+                let start = Instant::now();
+                for _ in 0..repeats {
+                    let b = black_box(blocks.as_slice());
+                    let o = black_box(order.as_slice());
+                    let u = black_box(uses.as_slice());
+                    let d = black_box(defs.as_slice());
+                    let _ = black_box(if reference {
+                        reference_sweep(b, o, u, d)
+                    } else {
+                        solve_liveness(b, o, u, d)
+                    });
+                }
+                start.elapsed().as_secs_f64() * 1e6 / repeats as f64
+            };
+            let mut old = Vec::new();
+            let mut new = Vec::new();
+            for round in 0..7 {
+                if round % 2 == 0 {
+                    old.push(measure(true));
+                    new.push(measure(false));
+                } else {
+                    new.push(measure(false));
+                    old.push(measure(true));
+                }
+            }
+            old.sort_by(f64::total_cmp);
+            new.sort_by(f64::total_cmp);
+            println!(
+                "kind={kind} blocks={n} sweep_us={:.3} worklist_us={:.3} speedup={:.3}",
+                old[3], new[3], old[3] / new[3]
+            );
+        }
+    }
+    println!("PASS: all 12 synthetic liveness configurations matched the reference");
+}
