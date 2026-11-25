@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, hash_map::Entry};
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -85,17 +85,25 @@ impl Cache {
 
 #[derive(Debug, Default)]
 struct Pending {
-    active: Mutex<HashSet<CacheKey>>,
-    finished: Condvar,
+    // An uncontended key needs no condition variable.
+    active: Mutex<HashMap<CacheKey, Option<Arc<Condvar>>>>,
 }
 
 impl Pending {
     fn enter(&self, key: CacheKey) -> Conversion<'_> {
         let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
-        while !active.insert(key) {
-            active = self.finished.wait(active).unwrap_or_else(|e| e.into_inner());
+        loop {
+            match active.entry(key) {
+                Entry::Vacant(entry) => {
+                    entry.insert(None);
+                    return Conversion { pending: self, key };
+                }
+                Entry::Occupied(mut entry) => {
+                    let finished = Arc::clone(entry.get_mut().get_or_insert_with(Arc::default));
+                    active = finished.wait(active).unwrap_or_else(|e| e.into_inner());
+                }
+            }
         }
-        Conversion { pending: self, key }
     }
 }
 
@@ -107,9 +115,11 @@ struct Conversion<'a> {
 impl Drop for Conversion<'_> {
     fn drop(&mut self) {
         let mut active = self.pending.active.lock().unwrap_or_else(|e| e.into_inner());
-        active.remove(&self.key);
+        let finished = active.remove(&self.key).flatten();
         drop(active);
-        self.pending.finished.notify_all();
+        if let Some(finished) = finished {
+            finished.notify_all();
+        }
     }
 }
 
