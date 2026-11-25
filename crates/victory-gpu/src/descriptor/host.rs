@@ -5,7 +5,7 @@
 //! writes it (view creation and descriptor copies) and again when a draw
 //! reads it through a table and finds the slot changed.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -54,7 +54,7 @@ pub(crate) struct HostHeap {
     /// buffer descriptor's dwords 0 and 1 (shaders reading a descriptor's
     /// address as data, `crate::memory`): the buffer, its mapping and host
     /// address, made on first use.
-    addresses: std::sync::OnceLock<Option<(ID3D12Resource, usize, u64)>>,
+    addresses: OnceLock<Option<(ID3D12Resource, usize, u64)>>,
     /// What the title slots view that title memory feeds (`crate::bindless`).
     pub(crate) viewed: std::sync::Arc<crate::bindless::Viewed>,
 }
@@ -202,7 +202,7 @@ impl HostHeap {
             },
             strides,
             marks,
-            addresses: std::sync::OnceLock::new(),
+            addresses: OnceLock::new(),
             viewed: Default::default(),
         };
         if !sampler {
@@ -540,11 +540,10 @@ impl HostHeap {
     /// The host address of the slots' view addresses (see the field), made
     /// on first use from the slots made so far.
     pub(crate) fn view_addresses(&self) -> Option<u64> {
-        let made = self.addresses.get_or_init(|| {
+        let made = publish_snapshot(&self.made, &self.addresses, |made| {
             let (buffer, data) = host()?.upload_buffer(u64::from(self.count) * 8)?;
             crate::host::name(&buffer, || "view addresses".into());
             let data = data as usize;
-            let made = self.made.lock().unwrap_or_else(|e| e.into_inner());
             for (i, &key) in made.iter().enumerate() {
                 let view = (key != 0).then(|| view_at(key as u32, (key >> 32) as u32)).flatten();
                 write_address(data, i, view.as_ref());
@@ -557,6 +556,8 @@ impl HostHeap {
     }
 
     /// Slot `index` now holds `view` (or no view): its view address.
+    /// Called with `made` locked, so a first-time snapshot either sees
+    /// this change or has already published the table to update.
     fn note_address(&self, index: u32, view: Option<&View>) {
         if let Some(Some((_, data, _))) = self.addresses.get() {
             write_address(*data, index as usize, view);
@@ -716,6 +717,22 @@ impl HostHeap {
     pub(crate) fn made(&self, index: u32) -> bool {
         self.made.lock().unwrap_or_else(|e| e.into_inner())[index as usize] != 0
     }
+}
+
+/// Publish a lazy snapshot before releasing the lock used by writers.
+/// Locking only inside the initializer leaves a gap between its return
+/// (the snapshot is complete) and OnceLock's publication (writers still
+/// see None). Readers of an initialized value do not take the lock.
+fn publish_snapshot<'a, S, T>(
+    state: &Mutex<S>,
+    published: &'a OnceLock<T>,
+    snapshot: impl FnOnce(&S) -> T,
+) -> &'a T {
+    if let Some(value) = published.get() {
+        return value;
+    }
+    let state = state.lock().unwrap_or_else(|e| e.into_inner());
+    published.get_or_init(|| snapshot(&state))
 }
 
 /// Logs `what` the first time it happens.
@@ -1427,6 +1444,62 @@ fn null_view(at: D3D12_CPU_DESCRIPTOR_HANDLE) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn address_snapshot_publication_is_serialized_with_writers() {
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let state = Mutex::new(1u64);
+        let published = OnceLock::new();
+        let snapshot_started = Barrier::new(2);
+        let writer_waiting = Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                snapshot_started.wait();
+                // The snapshot must exclude descriptor writers, including
+                // its final publication.
+                let excluded = state.try_lock().is_err();
+                // Always release the other participant before asserting;
+                // a broken implementation must fail, not hang the suite.
+                writer_waiting.wait();
+                assert!(excluded);
+                let mut current = state.lock().unwrap();
+                *current = 2;
+                let table: &AtomicU64 = published.get().expect("snapshot published before unlock");
+                table.store(*current, Ordering::Relaxed);
+            });
+            publish_snapshot(&state, &published, |current| {
+                snapshot_started.wait();
+                writer_waiting.wait();
+                AtomicU64::new(*current)
+            });
+        });
+        assert_eq!(published.get().unwrap().load(Ordering::Relaxed), 2);
+        assert_eq!(*state.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn address_snapshot_observes_prior_writes_and_reuses_publication() {
+        let state = Mutex::new(7u64);
+        let published = OnceLock::new();
+        *state.lock().unwrap() = 9;
+        assert_eq!(*publish_snapshot(&state, &published, |v| *v), 9);
+        // A reader of the already initialized table must not wait on made.
+        std::thread::scope(|scope| {
+            let held = state.lock().unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let state = &state;
+            let published = &published;
+            scope.spawn(move || {
+                let value = *publish_snapshot(state, published, |_| panic!("reinitialized"));
+                tx.send(value).unwrap();
+            });
+            let result = rx.recv_timeout(std::time::Duration::from_secs(5));
+            drop(held);
+            assert_eq!(result.unwrap(), 9);
+        });
+    }
 
     /// The world's 16-byte view of 0 elements removed the device.
     #[test]
