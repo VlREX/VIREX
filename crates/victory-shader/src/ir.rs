@@ -1230,7 +1230,10 @@ mod tests {
                 } else {
                     Some(vec![n - 2, n - 1])
                 };
-                assert_eq!(reference.as_ref().map(|(_, e)| e.clone()), expected_entries);
+                assert_eq!(
+                    reference.as_ref().map(|(_, e)| e.clone()),
+                    expected_entries
+                );
                 assert_eq!(multi_entry_loop(&blocks, &inside), reference);
                 let repeats = (4096 / n).max(2);
                 let mut old_times = Vec::new();
@@ -1240,7 +1243,7 @@ mod tests {
                     for _ in 0..repeats {
                         let b = black_box(blocks.as_slice());
                         let i = black_box(inside.as_slice());
-                        black_box(if old {
+                        let _ = black_box(if old {
                             reference_multi_entry_loop(b, i)
                         } else {
                             multi_entry_loop(b, i)
