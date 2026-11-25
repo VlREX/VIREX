@@ -769,6 +769,14 @@ fn bc7<'a>(
         }
         let mode = usize::from(ctrl & 7);
         let subsets = usize::from((ctrl & 0xff) >> 6);
+        // Rotation is only defined for modes 4 and 5. In other modes it
+        // can move an absent alpha field into a channel with p-bits.
+        let rotation = (ctrl >> 3) & 3;
+        if subsets != [3, 2, 3, 2, 1, 1, 1, 2][mode]
+            || (rotation != 0 && !matches!(mode, 4 | 5))
+        {
+            return Err(Error("invalid BC7 control word"));
+        }
         let prec = bc7_precision(ctrl);
         let three = subsets == 3;
         let or0 = |v: u8| if three { 0 } else { v };
@@ -1300,6 +1308,20 @@ mod tests {
         let mut next = src.iter().copied();
         lanes(&t, &BC4_LANES, 1, records.len(), |_| next.next(), &mut got).unwrap();
         assert_eq!(got, records.concat());
+    }
+
+    #[test]
+    fn bc7_rejects_inconsistent_control_words() {
+        let mut t = Tables::parse(&tables()).unwrap();
+        let record = [0u8; 32];
+        for ctrl in [0x09, 0x89, 0x86, 0x06] {
+            t.ctrl7[0] = ctrl;
+            let mut dst = [0u8; 16];
+            assert!(bc7([record.as_slice()].into_iter(), [dst.as_mut_slice()].into_iter(), &t).is_err());
+        }
+        t.ctrl7[0] = 0x46;
+        let mut dst = [0u8; 16];
+        assert!(bc7([record.as_slice()].into_iter(), [dst.as_mut_slice()].into_iter(), &t).is_ok());
     }
 
     #[test]
