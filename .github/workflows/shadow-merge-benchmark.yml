@@ -1,0 +1,19 @@
+name: Synthetic shadow merge benchmark
+on:
+  pull_request:
+    branches: [perf/avx2-shadow-merge]
+    paths:
+      - 'benchmarks/shadow_merge.rs'
+      - '.github/workflows/shadow-merge-benchmark.yml'
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - run: rustc --version
+      - run: rustc --edition=2024 -O benchmarks/shadow_merge.rs -o shadow-merge-bench.exe
+      - run: .\shadow-merge-bench.exe
