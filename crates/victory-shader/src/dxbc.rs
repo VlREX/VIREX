@@ -115,19 +115,22 @@ impl<'a> Container<'a> {
 }
 
 pub(crate) fn u16_at(data: &[u8], at: usize) -> Result<u16, ShaderError> {
-    data.get(at..at + 2)
+    let end = at.checked_add(2).ok_or(ShaderError::Malformed("truncated"))?;
+    data.get(at..end)
         .map(|b| u16::from_le_bytes(b.try_into().expect("2 bytes")))
         .ok_or(ShaderError::Malformed("truncated"))
 }
 
 pub(crate) fn u32_at(data: &[u8], at: usize) -> Result<u32, ShaderError> {
-    data.get(at..at + 4)
+    let end = at.checked_add(4).ok_or(ShaderError::Malformed("truncated"))?;
+    data.get(at..end)
         .map(|b| u32::from_le_bytes(b.try_into().expect("4 bytes")))
         .ok_or(ShaderError::Malformed("truncated"))
 }
 
 pub(crate) fn u64_at(data: &[u8], at: usize) -> Result<u64, ShaderError> {
-    data.get(at..at + 8)
+    let end = at.checked_add(8).ok_or(ShaderError::Malformed("truncated"))?;
+    data.get(at..end)
         .map(|b| u64::from_le_bytes(b.try_into().expect("8 bytes")))
         .ok_or(ShaderError::Malformed("truncated"))
 }
@@ -169,6 +172,22 @@ mod tests {
         assert_eq!(c.part(FourCC::SFI0).unwrap().data, &[1, 2, 3, 4]);
         assert_eq!(c.part(FourCC::HASH).unwrap().data.len(), 20);
         assert!(c.part(FourCC::DXIL).is_none());
+    }
+
+    #[test]
+    fn integer_readers_reject_overflowing_offsets() {
+        let bytes = [0u8; 8];
+        for at in [usize::MAX, usize::MAX - 1] {
+            assert!(u16_at(&bytes, at).is_err());
+            assert!(u32_at(&bytes, at).is_err());
+            assert!(u64_at(&bytes, at).is_err());
+        }
+        assert_eq!(u16_at(&bytes, 6).unwrap(), 0);
+        assert_eq!(u32_at(&bytes, 4).unwrap(), 0);
+        assert_eq!(u64_at(&bytes, 0).unwrap(), 0);
+        assert!(u16_at(&bytes, 7).is_err());
+        assert!(u32_at(&bytes, 5).is_err());
+        assert!(u64_at(&bytes, 1).is_err());
     }
 
     #[test]
