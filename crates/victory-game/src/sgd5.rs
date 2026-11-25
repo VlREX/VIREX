@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn finds_names_at_the_u8_length_limit() {
         for len in [1usize, 30, 31, 32, 127, 254] {
-            let mut bytes = vec![b'x'; 4096];
+            let mut bytes = vec![b'!'; 4096];
             bytes.push((len + 1) as u8);
             let name = "Z".repeat(len);
             bytes.extend_from_slice(name.as_bytes());
