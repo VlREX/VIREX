@@ -1312,6 +1312,12 @@ pub struct Dispatch<'a> {
 }
 
 #[cfg(test)]
+pub(super) struct DispatchResult {
+    pub(super) uavs: Vec<Vec<u32>>,
+    pub(super) timings: Vec<std::time::Duration>,
+}
+
+#[cfg(test)]
 impl Host {
     /// Runs a compute pipeline and returns each UAV's contents in heap
     /// order (texels as float bits, row by row).
@@ -1321,6 +1327,28 @@ impl Host {
         pso: &ID3D12PipelineState,
         d: &Dispatch,
     ) -> Result<Vec<Vec<u32>>, String> {
+        self.dispatch_inner(root, pso, d, &[]).map(|result| result.uavs)
+    }
+
+    /// Measures each dispatch with GPU queue timestamps. All of the
+    /// pipelines share the supplied root signature and resource bindings.
+    pub(super) fn time_dispatches(
+        &self,
+        root: &ID3D12RootSignature,
+        d: &Dispatch,
+        pipelines: &[&ID3D12PipelineState],
+    ) -> Result<DispatchResult, String> {
+        let first = pipelines.first().ok_or("no dispatches to measure")?;
+        self.dispatch_inner(root, first, d, pipelines)
+    }
+
+    fn dispatch_inner(
+        &self,
+        root: &ID3D12RootSignature,
+        pso: &ID3D12PipelineState,
+        d: &Dispatch,
+        pipelines: &[&ID3D12PipelineState],
+    ) -> Result<DispatchResult, String> {
         let dev = &self.device;
         // SAFETY: D3D12 calls with descriptions that outlive them; resources
         // stay alive until the fence says the GPU is done.
@@ -1882,7 +1910,53 @@ impl Host {
                 }
             }
             let [x, y, z] = d.groups;
-            list.Dispatch(x, y, z);
+            let stamps = if pipelines.is_empty() {
+                list.Dispatch(x, y, z);
+                None
+            } else {
+                let count = u32::try_from(pipelines.len())
+                    .ok()
+                    .and_then(|len| len.checked_mul(2))
+                    .ok_or("too many dispatches to measure")?;
+                let mut heap: Option<ID3D12QueryHeap> = None;
+                dev.CreateQueryHeap(
+                    &D3D12_QUERY_HEAP_DESC {
+                        Type: D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                        Count: count,
+                        NodeMask: 0,
+                    },
+                    &mut heap,
+                )
+                .map_err(err)?;
+                let heap = heap.ok_or("no timestamp query heap")?;
+                let bytes = u64::from(count) * 8;
+                let back = make(
+                    D3D12_HEAP_TYPE_READBACK,
+                    &buffer(bytes, D3D12_RESOURCE_FLAG_NONE),
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                )?;
+                let uav_barrier = D3D12_RESOURCE_BARRIER {
+                    Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
+                    Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+                    Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                        UAV: std::mem::ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER::default()),
+                    },
+                };
+                for (i, &pipeline) in pipelines.iter().enumerate() {
+                    if i != 0 {
+                        // All dispatches write the same UAVs. Keep the barrier
+                        // between dispatches outside the timestamp interval.
+                        list.ResourceBarrier(std::slice::from_ref(&uav_barrier));
+                    }
+                    list.SetPipelineState(pipeline);
+                    let start = 2 * i as u32;
+                    list.EndQuery(&heap, D3D12_QUERY_TYPE_TIMESTAMP, start);
+                    list.Dispatch(x, y, z);
+                    list.EndQuery(&heap, D3D12_QUERY_TYPE_TIMESTAMP, start + 1);
+                }
+                list.ResolveQueryData(&heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, count, &back, 0);
+                Some((heap, back, count))
+            };
             for (r, size, n, rb) in &uavs {
                 list.ResourceBarrier(&[transition(
                     r,
@@ -1911,6 +1985,31 @@ impl Host {
                 }
                 std::thread::yield_now();
             }
+            let timings = if let Some((_heap, back, count)) = stamps {
+                let frequency = queue.GetTimestampFrequency().map_err(err)?;
+                if frequency == 0 {
+                    return Err("zero GPU timestamp frequency".into());
+                }
+                let mut p = std::ptr::null_mut();
+                back.Map(0, None, Some(&mut p)).map_err(err)?;
+                let ticks = std::slice::from_raw_parts(p.cast::<u64>(), count as usize);
+                let intervals: Result<Vec<_>, _> = ticks
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&[start, end]| {
+                        end.checked_sub(start)
+                            .map(|delta| {
+                                std::time::Duration::from_secs_f64(delta as f64 / frequency as f64)
+                            })
+                            .ok_or("GPU timestamps went backwards")
+                    })
+                    .collect();
+                back.Unmap(0, None);
+                intervals?
+            } else {
+                Vec::new()
+            };
             let mut out = Vec::new();
             for (_, size, n, rb) in &uavs {
                 let mut p = std::ptr::null_mut();
@@ -1935,7 +2034,7 @@ impl Host {
                 out.push(words);
             }
             drop(keep);
-            Ok(out)
+            Ok(DispatchResult { uavs: out, timings })
         }
     }
 }

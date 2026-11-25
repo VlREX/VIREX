@@ -56,6 +56,7 @@ pub const VIEW_READS: u32 = VIEW_WRITE_BITS;
 /// `ShaderFlags` bits (metadata) and their `SFI0` feature bits.
 pub(crate) mod flags {
     pub const RAW_BUFFERS: u64 = 1 << 4;
+    pub const LOW_PRECISION: u64 = 1 << 5;
     pub const STENCIL_REF: u64 = 1 << 11;
     pub const TYPED_UAV_LOADS: u64 = 1 << 13;
     /// UAVs in a vertex, geometry or mesh program.
@@ -63,6 +64,7 @@ pub(crate) mod flags {
     pub const ROVS: u64 = 1 << 18;
     pub const WAVE_OPS: u64 = 1 << 19;
     pub const INT64: u64 = 1 << 20;
+    pub const NATIVE_LOW_PRECISION: u64 = 1 << 23;
     pub const ATOMIC64_TYPED: u64 = 1 << 27;
     pub const RESOURCE_HEAP: u64 = 1 << 30;
     pub const SAMPLER_HEAP: u64 = 1 << 31;
@@ -580,6 +582,7 @@ impl Shader {
             (flags::SAMPLER_HEAP, uses.sampler_heap),
             (flags::WAVE_OPS, uses.wave),
             (flags::INT64, uses.int64),
+            (flags::LOW_PRECISION | flags::NATIVE_LOW_PRECISION, uses.half),
         ] {
             self.flags = if used { self.flags | flag } else { self.flags & !flag };
         }
@@ -956,6 +959,9 @@ impl Shader {
         }
         if self.flags & flags::ATOMIC64_HEAP != 0 {
             features |= 0x1000_0000;
+        }
+        if self.flags & flags::NATIVE_LOW_PRECISION != 0 {
+            features |= 0x4_0000;
         }
         let sfi0 = features.to_le_bytes();
         let isg1 = container::signature(&self.inputs, true);

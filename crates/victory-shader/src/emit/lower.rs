@@ -90,9 +90,18 @@ enum Stop {
 }
 
 pub(crate) fn lower(parts: &Parts) -> Result<Lowered, ShaderError> {
+    lower_with_native_f16(parts, false)
+}
+
+/// The native path is exercised by opt-in semantic probes. The normal
+/// translator uses software narrowing until the guarded path is measured on hardware.
+pub(crate) fn lower_with_native_f16(
+    parts: &Parts,
+    native_f16: bool,
+) -> Result<Lowered, ShaderError> {
     let mut bad = HashMap::new();
     loop {
-        match Lower::new(parts, &bad).run() {
+        match Lower::new(parts, &bad, native_f16).run() {
             Ok(l) => return Ok(l),
             Err(Stop::Retry(v, why)) => {
                 if bad.insert(v, why).is_some() {
@@ -180,6 +189,7 @@ struct Lower<'a> {
     s: Shader,
     x: &'a Parts<'a>,
     bad: &'a HashMap<Value, Why>,
+    native_f16: bool,
     lane_fail: HashMap<Value, Why>,
     vals: HashMap<Value, Val>,
     floats: HashMap<Value, V>,
@@ -518,7 +528,7 @@ fn smem_dwords(name: &str) -> Option<u32> {
 }
 
 impl<'a> Lower<'a> {
-    fn new(x: &'a Parts<'a>, bad: &'a HashMap<Value, Why>) -> Self {
+    fn new(x: &'a Parts<'a>, bad: &'a HashMap<Value, Why>, native_f16: bool) -> Self {
         let p = x.p;
         let mut phi_at = HashMap::new();
         for (b, block) in p.blocks.iter().enumerate() {
@@ -630,6 +640,7 @@ impl<'a> Lower<'a> {
             s,
             x,
             bad,
+            native_f16,
             lane_fail: HashMap::new(),
             vals: HashMap::new(),
             floats: HashMap::new(),
@@ -6542,16 +6553,24 @@ impl<'a> Lower<'a> {
         Ok(self.s.m.bin(c, Bin::And, x, m))
     }
 
+    fn widen_half(&mut self, h: V) -> V {
+        self.s.op(
+            self.cur,
+            "legacyF16ToF32",
+            Attr::ReadNone,
+            self.s.t.f32,
+            131,
+            &[h],
+        )
+    }
+
     /// An f16 source as an f32 (exact), with its abs/neg modifiers.
     fn half_fsrc(&mut self, inst: &Inst, k: usize) -> Result<V, Why> {
         let Fields::Valu(v) = &inst.fields else {
             unreachable!()
         };
         let h = self.half_src(inst, k)?;
-        let f32t = self.s.t.f32;
-        let mut f = self
-            .s
-            .op(self.cur, "legacyF16ToF32", Attr::ReadNone, f32t, 131, &[h]);
+        let mut f = self.widen_half(h);
         if v.abs >> k & 1 != 0 {
             f = self.unary(6, f);
         }
@@ -6560,6 +6579,32 @@ impl<'a> Lower<'a> {
             f = self.s.m.bin(self.cur, Bin::Sub, z, f);
         }
         Ok(f)
+    }
+
+    /// Native arithmetic gives ordinary half results directly. For NaNs use
+    /// the software path so the host's native NaN payload choice does not
+    /// change the bits returned by the existing translation.
+    fn native_f16_bin(&mut self, op: Bin, left: V, right: V) -> V {
+        let c = self.cur;
+        let i16t = self.s.m.int(16);
+        let half = self.s.m.half();
+        let a = self.s.m.cast(c, Cast::Trunc, left, i16t);
+        let b = self.s.m.cast(c, Cast::Trunc, right, i16t);
+        let a = self.s.m.cast(c, Cast::Bitcast, a, half);
+        let b = self.s.m.cast(c, Cast::Bitcast, b, half);
+        let native = self.s.m.bin(c, op, a, b);
+        let native = self.s.m.cast(c, Cast::Bitcast, native, i16t);
+        let native = self.s.m.cast(c, Cast::ZExt, native, self.s.t.i32);
+
+        let (abs, infinity) = (self.s.m.i32(0x7FFF), self.s.m.i32(0x7C00));
+        let magnitude = self.s.m.bin(c, Bin::And, native, abs);
+        let nan = self.s.m.cmp(c, pred::IUGT, magnitude, infinity);
+        let branch = self.begin_guarded(Some(nan));
+        let a = self.widen_half(left);
+        let b = self.widen_half(right);
+        let wide = self.s.m.bin(self.cur, op, a, b);
+        let software = self.narrow16(wide);
+        self.end_guarded(branch, &[(software, native)])[0]
     }
 
     /// Writes a 16-bit result (low bits of `x`) into the destination's low
@@ -6703,6 +6748,26 @@ impl<'a> Lower<'a> {
             return float_result(self, f);
         }
         if float2.contains(&name) {
+            let native_op = match name {
+                "v_add_f16" => Some((Bin::Add, 0, 1)),
+                "v_sub_f16" => Some((Bin::Sub, 0, 1)),
+                "v_subrev_f16" => Some((Bin::Sub, 1, 0)),
+                "v_mul_f16" => Some((Bin::Mul, 0, 1)),
+                _ => None,
+            };
+            if self.native_f16
+                && self.mode16 == Some(0)
+                && v.abs == 0
+                && v.neg == 0
+                && v.omod == 0
+                && !v.clamp
+                && let Some((op, left, right)) = native_op
+            {
+                let a = self.half_src(inst, left)?;
+                let b = self.half_src(inst, right)?;
+                let result = self.native_f16_bin(op, a, b);
+                return self.write_half(inst, result, guard);
+            }
             let (a, b) = (self.half_fsrc(inst, 0)?, self.half_fsrc(inst, 1)?);
             let r = match name {
                 "v_add_f16" => self.s.m.bin(c, Bin::Add, a, b),

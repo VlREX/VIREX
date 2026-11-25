@@ -248,6 +248,13 @@ fn program(body: &[u32], scalar: bool) -> Vec<u32> {
 /// bytes of LDS; one view table at s4 (the input buffer, then the output
 /// UAV), the group id in s6.
 fn lower_program(words: &[u32]) -> Result<HostShader, String> {
+    lower_program_with_native_f16(words, false)
+}
+
+fn lower_program_with_native_f16(
+    words: &[u32],
+    native_f16: bool,
+) -> Result<HostShader, String> {
     let used = |kind, table_offset_dwords| UsedResource {
         kind,
         root: RootType::Table,
@@ -282,7 +289,7 @@ fn lower_program(words: &[u32]) -> Result<HostShader, String> {
     let st = structure::structure(&p).map_err(e)?;
     let res = resource::track(&p, &native.layout, native.stage, Some(&st)).map_err(e)?;
     let io = io::raise(&p, &native).map_err(e)?;
-    let lowered = lower::lower(&lower::Parts {
+    let parts = lower::Parts {
         native: &native,
         p: &p,
         st: &st,
@@ -293,8 +300,8 @@ fn lower_program(words: &[u32]) -> Result<HostShader, String> {
         prims: Vec::new(),
         mesh_stride: 0,
         view_marks: false,
-    })
-    .map_err(e)?;
+    };
+    let lowered = lower::lower_with_native_f16(&parts, native_f16).map_err(e)?;
     Ok(HostShader {
         stage: HwStage::Cs,
         dxil: lowered.dxil,
@@ -2778,6 +2785,215 @@ fn min_max_and_selects_take_denormals_on_the_bits() {
     let mut p = min_max_probes();
     p.extend(select_probes());
     defect(p, DENORMAL);
+}
+
+// Write directly to the runner log so successful tests show which
+// backends actually dispatched the shader under Rust's test harness.
+fn report_native_f16(args: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+    writeln!(std::io::stdout().lock(), "{args}").expect("write native f16 probe coverage");
+}
+
+fn native_f16_hosts() -> Vec<(&'static str, Host)> {
+    use windows::Win32::Graphics::Direct3D12::{
+        D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_DATA_D3D12_OPTIONS4,
+    };
+
+    let warp_only = std::env::var("VICTORY_WARP").is_ok_and(|v| v == "1");
+    [("hardware", false), ("WARP", true)]
+        .into_iter()
+        .filter(|&(_, warp)| warp || !warp_only)
+        .filter_map(|(label, warp)| {
+            let host = match Host::new(warp) {
+                Ok(host) => host,
+                Err(error) => {
+                    report_native_f16(format_args!("native f16 {label}: skipped ({error})"));
+                    return None;
+                }
+            };
+            let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS4::default();
+            // SAFETY: OPTIONS4 writes a structure of the size passed here.
+            let query = unsafe {
+                host.device.CheckFeatureSupport(
+                    D3D12_FEATURE_D3D12_OPTIONS4,
+                    (&raw mut options).cast(),
+                    size_of_val(&options) as u32,
+                )
+            };
+            if let Err(error) = query {
+                report_native_f16(format_args!("native f16 {label}: OPTIONS4 query failed ({error})"));
+                return None;
+            }
+            if !options.Native16BitShaderOpsSupported.as_bool() {
+                report_native_f16(format_args!("native f16 {label}: adapter reports no native f16 support"));
+                return None;
+            }
+            Some((label, host))
+        })
+        .collect()
+}
+
+/// Guarded native half arithmetic must match the software path bit for bit,
+/// including signed zeros, subnormals and the entire NaN payload.
+#[test]
+fn native_f16_binary_arithmetic_reports_backend_coverage() {
+    const NATIVE_16_BIT: u64 = 0x4_0000;
+    let feature_bits = |shader: &HostShader| {
+        let container = crate::Container::parse(&shader.dxil).expect("DXIL container");
+        let flags = container.part(crate::FourCC::SFI0).expect("SFI0");
+        u64::from_le_bytes(flags.data.try_into().expect("SFI0 feature bits"))
+    };
+
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let hosts = native_f16_hosts();
+    let inputs = half_pairs();
+    let is_nan = |bits: u32| bits & 0x7FFF > 0x7C00;
+
+    // A guest MODE change to round-toward-zero still uses software.
+    let rounded_to_zero = program(&[0xBA80_0881, 3, vop2(0x32, 5, v(1), 2)], false);
+    let software = lower_program(&rounded_to_zero).expect("software round-toward-zero");
+    let candidate =
+        lower_program_with_native_f16(&rounded_to_zero, true).expect("retained round-toward-zero");
+    assert_eq!(candidate.dxil, software.dxil);
+    assert_eq!(feature_bits(&candidate) & NATIVE_16_BIT, 0);
+
+    let mut validator = validator::Validator::load(validator::Validator::default_path().as_deref());
+    report_native_f16(format_args!("native f16 DXIL validator loaded: {}", validator.is_ok()));
+    for (opcode, op) in [(0x32, "add"), (0x33, "sub"), (0x34, "subrev"), (0x35, "mul")] {
+        let words = program(&[vop2(opcode, 5, v(1), 2)], false);
+        assert!(disassembly(&[vop2(opcode, 5, v(1), 2)], false).contains(&format!("v_{op}_f16")));
+        let software = lower_program(&words).expect("software f16 lowering");
+        let native = lower_program_with_native_f16(&words, true).expect("native f16 lowering");
+        assert_eq!(feature_bits(&software) & NATIVE_16_BIT, 0);
+        assert_ne!(feature_bits(&native) & NATIVE_16_BIT, 0);
+        if let Ok(validator) = validator.as_mut() {
+            validator
+                .validate(&mut native.dxil.clone())
+                .expect("native f16 DXIL validation");
+        }
+        for (label, host) in &hosts {
+            let expected = run(host, &software, &inputs, false).expect("software f16 dispatch");
+            let actual = run(host, &native, &inputs, false).expect("native f16 dispatch");
+            assert_eq!(actual.len(), inputs.len());
+            assert_eq!(expected.len(), inputs.len());
+            let mut nan_count = 0;
+            for ((input, got), want) in inputs.iter().zip(actual).zip(expected) {
+                nan_count += usize::from(is_nan(want[0]));
+                assert_eq!(got, want, "{label}, {op}, input {input:08x?}");
+            }
+            assert!(nan_count > 0, "{op} must exercise the NaN fallback");
+            report_native_f16(format_args!(
+                "native f16 {label} {op}: {} non-NaN results and {nan_count} NaN bit patterns match",
+                inputs.len() - nan_count
+            ));
+        }
+    }
+}
+
+/// Measures the shader execution interval using the command queue's
+/// timestamps. Both variants share one pipeline layout and set of buffers.
+/// CI checks the output independently of the measured speed.
+#[test]
+fn native_f16_dispatch_timestamps() {
+    const GROUPS: u32 = 256;
+    const ITERATIONS: usize = 16;
+    const SAMPLES_PER_VARIANT: usize = 8;
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let hosts = native_f16_hosts();
+    if hosts.is_empty() {
+        return;
+    }
+
+    // The low half of v5 is a runtime-fed accumulator. Its high half
+    // must survive each instruction in the dependent chain.
+    let body = [
+        vop2(0x32, 5, v(5), 1),
+        vop2(0x35, 5, v(5), 2),
+        vop2(0x33, 5, v(5), 3),
+    ]
+    .repeat(ITERATIONS);
+    let words = program(&body, false);
+    let software = lower_program(&words).expect("software benchmark lowering");
+    let native = lower_program_with_native_f16(&words, true).expect("native benchmark lowering");
+    assert_eq!(native.user_data, software.user_data);
+    let order: Vec<usize> = [0, 1]
+        .into_iter()
+        .chain([1, 0, 0, 1].into_iter().cycle().take(2 * SAMPLES_PER_VARIANT))
+        .collect();
+
+    for (label, host) in hosts {
+        let (root, software_pso) = host.compute_pipeline(&software).expect("software pipeline");
+        let native_pso = host
+            .compute_pipeline_with(&root, &native.dxil)
+            .expect("native pipeline with the same root signature");
+        let variants = [&software_pso, &native_pso];
+        let pipelines: Vec<_> = order.iter().map(|&mode| variants[mode]).collect();
+        for (workload, mixed_nan) in [("finite", false), ("one NaN lane per group", true)] {
+            let inputs: Vec<_> = (0..GROUPS * 64)
+                .map(|lane| {
+                    let start = if mixed_nan && lane % 64 == 0 {
+                        0x7C01
+                    } else {
+                        0x3C00 | (lane & 0xFF)
+                    };
+                    [
+                        0x2C00 | (lane & 0x3F),
+                        0x3C01 + (lane & 7),
+                        0x2800 | ((lane >> 6) & 0x3F),
+                        0x5A5A_0000 | start,
+                    ]
+                })
+                .collect();
+            let expected =
+                run(&host, &software, &inputs, false).expect("software benchmark reference");
+            let nan_count = expected.iter().filter(|result| h(result[0]).is_nan()).count();
+            assert_eq!(nan_count, if mixed_nan { GROUPS as usize } else { 0 });
+            let data: Vec<_> = inputs.into_iter().flatten().collect();
+            let views = [
+                View::Buffer {
+                    data: &data,
+                    stride: Stride::Raw,
+                },
+                View::RawUav(GROUPS * 64 * 4),
+            ];
+            let constants = vec![0; software.user_data_dwords().max(1) as usize];
+            let result = host
+                .time_dispatches(
+                    &root,
+                    &Dispatch {
+                        roots: vec![(0, Root::Constants(constants))],
+                        views: &views,
+                        samplers: &[],
+                        groups: [GROUPS, 1, 1],
+                    },
+                    &pipelines,
+                )
+                .expect("timestamped dispatches");
+            // The last dispatch is native. Verify its actual timed output.
+            assert!(
+                result.uavs[0].iter().copied().eq(expected.into_iter().flatten()),
+                "{label}, {workload}: timed native output differs from the software output"
+            );
+            assert_eq!(result.timings.len(), order.len());
+            let mut micros = [Vec::new(), Vec::new()];
+            for (&mode, elapsed) in order.iter().zip(result.timings).skip(2) {
+                micros[mode].push(elapsed.as_secs_f64() * 1_000_000.0);
+            }
+            for samples in &mut micros {
+                assert_eq!(samples.len(), SAMPLES_PER_VARIANT);
+                samples.sort_by(f64::total_cmp);
+            }
+            let midpoint = SAMPLES_PER_VARIANT / 2;
+            let [software_median, native_median] = micros
+                .each_ref()
+                .map(|samples| (samples[midpoint - 1] + samples[midpoint]) / 2.0);
+            assert!(software_median > 0.0 && native_median > 0.0);
+            report_native_f16(format_args!(
+                "native f16 timing {label} [{workload}]: software {software_median:.2} us, \
+                 guarded native {native_median:.2} us; {SAMPLES_PER_VARIANT} dispatches per variant"
+            ));
+        }
+    }
 }
 
 /// f16 results round to nearest even, the console's default mode (toward
