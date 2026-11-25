@@ -278,41 +278,46 @@ fn list_pack(path: &Path, data: &[u8], t: &Totals, verbose: bool) {
     for g in pack.graphics() {
         graphics += 1;
         keyed += usize::from(t.engine.contains_key(&g.shader_hash));
-        let mut line = format!(
-            "graphics key={} shader={} pipeline={} depth-stencil={} rasterizer={} blend={}",
-            hex(g.key),
-            hex(g.shader_hash),
-            hex(g.pipeline_hash),
-            hex(g.depth_stencil_hash),
-            hex(g.rasterizer_hash),
-            hex(g.blend_hash)
-        );
-        if let (Some(f), Some((depth, count, topology)), Some((mask, samples, quality))) =
-            (g.target_formats(), g.depth_targets_topology(), g.samples())
-        {
-            let f: Vec<_> = f.iter().map(u8::to_string).collect();
-            line += &format!(
-                " targets={count}:{} depth={depth} topology={topology} samples={samples}.{quality} mask={mask:#x}",
-                f.join(",")
+        let mut line = verbose.then(|| {
+            let mut line = format!(
+                "graphics key={} shader={} pipeline={} depth-stencil={} rasterizer={} blend={}",
+                hex(g.key),
+                hex(g.shader_hash),
+                hex(g.pipeline_hash),
+                hex(g.depth_stencil_hash),
+                hex(g.rasterizer_hash),
+                hex(g.blend_hash)
             );
-        }
-        if let Some(inputs) = g.input_layout() {
-            let e: Vec<_> = (inputs.iter())
-                .map(|e| {
-                    let (s, i, f, slot, o) = (e.semantic, e.index, e.format, e.slot, e.offset);
-                    format!("{s}{i}:{f}:{slot}:{o}:{}:{}", e.class, e.step_rate)
-                })
-                .collect();
-            line += &format!(" inputs={}", e.join(","));
-        }
+            if let (Some(f), Some((depth, count, topology)), Some((mask, samples, quality))) =
+                (g.target_formats(), g.depth_targets_topology(), g.samples())
+            {
+                let f: Vec<_> = f.iter().map(u8::to_string).collect();
+                line += &format!(
+                    " targets={count}:{} depth={depth} topology={topology} samples={samples}.{quality} mask={mask:#x}",
+                    f.join(",")
+                );
+            }
+            if let Some(inputs) = g.input_layout() {
+                let e: Vec<_> = (inputs.iter())
+                    .map(|e| {
+                        let (s, i, f, slot, o) = (e.semantic, e.index, e.format, e.slot, e.offset);
+                        format!("{s}{i}:{f}:{slot}:{o}:{}:{}", e.class, e.step_rate)
+                    })
+                    .collect();
+                line += &format!(" inputs={}", e.join(","));
+            }
+            line
+        });
         for (stage, s) in shaderpack::STAGES.iter().zip(&g.stages) {
             let Some(s) = s else { continue };
             stages += 1;
             let n = name(s.program);
             named += usize::from(n != "?");
-            line += &format!(" {stage}={n}");
+            if let Some(line) = &mut line {
+                *line += &format!(" {stage}={n}");
+            }
         }
-        if verbose {
+        if let Some(line) = line {
             println!("{line}");
         }
     }
