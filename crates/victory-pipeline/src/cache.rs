@@ -1,7 +1,9 @@
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use anyhow::{Context, Result};
 
@@ -30,6 +32,7 @@ impl CacheKey {
 #[derive(Debug, Clone)]
 pub struct Cache {
     root: PathBuf,
+    pending: Arc<Pending>,
 }
 
 impl Cache {
@@ -38,7 +41,10 @@ impl Cache {
         let root = root.into();
         victory_core::ensure_outside_repo(&root)?;
         std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
-        Ok(Cache { root })
+        Ok(Cache {
+            root,
+            pending: Arc::default(),
+        })
     }
 
     pub fn path_for(&self, key: &CacheKey) -> PathBuf {
@@ -52,6 +58,11 @@ impl Cache {
         let path = self.path_for(&key);
         if path.is_file() {
             tracing::trace!(converter = converter.id(), key = %key.to_hex(), "cache hit");
+            return Ok(path);
+        }
+        let _conversion = self.pending.enter(key);
+        // A different caller may have published the entry while we waited.
+        if path.is_file() {
             return Ok(path);
         }
         let output = converter
@@ -69,6 +80,36 @@ impl Cache {
         }
         published?;
         Ok(path)
+    }
+}
+
+#[derive(Debug, Default)]
+struct Pending {
+    active: Mutex<HashSet<CacheKey>>,
+    finished: Condvar,
+}
+
+impl Pending {
+    fn enter(&self, key: CacheKey) -> Conversion<'_> {
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        while !active.insert(key) {
+            active = self.finished.wait(active).unwrap_or_else(|e| e.into_inner());
+        }
+        Conversion { pending: self, key }
+    }
+}
+
+struct Conversion<'a> {
+    pending: &'a Pending,
+    key: CacheKey,
+}
+
+impl Drop for Conversion<'_> {
+    fn drop(&mut self) {
+        let mut active = self.pending.active.lock().unwrap_or_else(|e| e.into_inner());
+        active.remove(&self.key);
+        drop(active);
+        self.pending.finished.notify_all();
     }
 }
 
@@ -135,6 +176,47 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(std::fs::read(&a).unwrap(), b"ABC");
         assert_eq!(conv.runs.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn concurrent_misses_share_the_conversion_across_cache_clones() {
+        struct SlowUpper(Upper);
+
+        impl Converter for SlowUpper {
+            fn id(&self) -> &'static str {
+                self.0.id()
+            }
+
+            fn version(&self) -> u32 {
+                self.0.version()
+            }
+
+            fn convert(&self, input: &[u8]) -> Result<Vec<u8>> {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                self.0.convert(input)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        let converter = SlowUpper(Upper {
+            version: 1,
+            runs: AtomicUsize::new(0),
+        });
+        let start = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let cache = cache.clone();
+                let start = &start;
+                let converter = &converter;
+                scope.spawn(move || {
+                    start.wait();
+                    let path = cache.get_or_convert(converter, b"abc").unwrap();
+                    assert_eq!(std::fs::read(path).unwrap(), b"ABC");
+                });
+            }
+        });
+        assert_eq!(converter.0.runs.load(Ordering::Relaxed), 1);
     }
 
     #[test]
