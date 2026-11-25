@@ -157,17 +157,26 @@ impl<'a> Graphics<'a> {
     /// The input layout; `None` if the metadata does not read as one.
     pub fn input_layout(&self) -> Option<Vec<InputElement<'a>>> {
         let m = self.metadata;
-        let end = 0x4c + u32_at(m, 0x38)? as usize;
+        let end = 0x4cusize.checked_add(u32_at(m, 0x38)? as usize)?;
+        // Do not read a name or element fields beyond the declared layout.
+        let m = m.get(..end)?;
         let count = u32_at(m, 0x4c)?;
-        let mut at = 0x50;
+        let mut at = 0x50usize;
         let mut out = Vec::new();
         for _ in 0..count {
             let len = u32_at(m, at)? as usize;
-            let name = m.get(at + 4..at + 4 + len)?;
-            at += 4 + len;
-            let f = |i: usize| u32_at(m, at + 4 * i);
+            let name_start = at.checked_add(4)?;
+            let name_end = name_start.checked_add(len)?;
+            let name = m.get(name_start..name_end)?.strip_suffix(&[0])?;
+            if name.is_empty() || name.contains(&0) {
+                return None;
+            }
+            let semantic = std::str::from_utf8(name).ok()?;
+            at = name_end;
+            let fields = m.get(at..at.checked_add(24)?)?;
+            let f = |i: usize| u32_at(fields, 4 * i);
             out.push(InputElement {
-                semantic: text(name),
+                semantic,
                 index: f(0)?,
                 format: f(1)?,
                 slot: f(2)?,
@@ -177,7 +186,7 @@ impl<'a> Graphics<'a> {
             });
             at += 24;
         }
-        (at == end && end <= m.len()).then_some(out)
+        (at == end).then_some(out)
     }
 }
 
@@ -466,6 +475,24 @@ mod tests {
         assert_eq!(c[0].shader_hash, 0x2222);
         assert_eq!((c[0].packet.len(), c[0].metadata.len()), (28, 20));
         assert_eq!((c[0].stage.program, c[0].stage.metadata), (&[2; 12][..], None));
+    }
+
+    #[test]
+    fn rejects_malformed_input_semantic_names() {
+        let file = pack_bytes();
+        let pack = Pack::parse(&file).unwrap();
+        let original = pack.graphics().next().unwrap();
+        // The first name starts at 0x54 and includes its terminating NUL.
+        for (at, value) in [(0x54, 0), (0x54, 0xff), (0x5c, b'X')] {
+            let mut metadata = original.metadata.to_vec();
+            metadata[at] = value;
+            let g = Graphics { metadata: &metadata, ..original };
+            assert!(g.input_layout().is_none());
+        }
+        let mut metadata = original.metadata.to_vec();
+        metadata[0x38..0x3c].copy_from_slice(&8u32.to_le_bytes());
+        let g = Graphics { metadata: &metadata, ..original };
+        assert!(g.input_layout().is_none());
     }
 
     #[test]
