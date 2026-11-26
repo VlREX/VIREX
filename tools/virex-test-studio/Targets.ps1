@@ -40,6 +40,7 @@ function Update-TargetControls {
     $tip.SetToolTip($revision,$(if ($workspace) { $revision.Text } else { $p.Sha }))
     $welcomeName.Text=if ($workspace -and !$local -and $target) { $target.Name.Split('/')[-1] } elseif ($local -and $localProject) { Split-Path -Leaf $localProject } elseif (!$workspace) { $p.Crate } else { 'Projekt kiválasztása' }
     $welcomeDetail.Text=$revision.Text
+    if (Get-Command Update-ExecutionMode -ErrorAction SilentlyContinue) { Update-ExecutionMode }
 }
 
 function Set-LocalProject([string]$directory) {
@@ -72,6 +73,19 @@ function Test-DepthResult([string]$output, [string]$errors) {
 function Add-WorkspaceCargoSteps([string]$cargo, [string]$directory) {
     $lock = if (Test-Path -LiteralPath (Join-Path $directory 'Cargo.lock') -PathType Leaf) { ' --locked' } else { '' }
     Add-Step 'Cargo version' $cargo '--version'
+    if ($script:machine.AutoMode) {
+        if ($script:machine.AgilityRequested) {
+            if (!(Test-AgilitySource $directory)) { throw 'Az AUTO D3D12 profilhoz Agility SDK integráció szükséges. Válassz megfelelő revíziót vagy általános profilt.' }
+            Add-Step 'L1 | Prepare D3D12 Agility SDK' $cargo 'xtask agility' 'agility'
+        }
+        Add-Step 'L1 | Workspace check' $cargo "check --workspace$lock"
+        if ($script:machine.DepthRequested) {
+            for($pass=1;$pass -le 3;$pass++){ Add-Step "L2 | D3D12 depth bounds ($pass/3)" $cargo "test -p victory-gpu --lib$lock pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws -- --exact --nocapture" 'depthtest' }
+        }
+        Add-Step 'L3 | Workspace tests' $cargo "test --workspace$lock -- --nocapture" 'tests'
+        Add-Step 'L4 | Clippy / warnings denied' $cargo "clippy --workspace --all-targets$lock -- -D warnings"
+        return
+    }
     if ($script:machine.AgilityRequested) {
         if (!(Test-AgilitySource $directory)) { throw 'A kiválasztott revízióban nincs támogatott Agility SDK integráció. Használd a Belobug #360 PR-t vagy kapcsold ki az Agility opciót.' }
         Add-Step 'Prepare D3D12 Agility SDK' $cargo 'xtask agility' 'agility'
@@ -373,3 +387,116 @@ $storageTimer.Add_Tick({
 })
 Update-StorageDisplay
 $storageTimer.Start()
+
+
+# Strict declarative profiles: no shell commands or arbitrary arguments.
+function ConvertFrom-StudioProfile([string]$json) {
+    if ([string]::IsNullOrWhiteSpace($json) -or $json.Length -gt 4096) { throw 'Üres vagy túl hosszú tesztprofil.' }
+    $data=ConvertFrom-Json -InputObject $json -ErrorAction Stop
+    if ($data -isnot [pscustomobject]) { throw 'A tesztprofil egy JSON objektum.' }
+    $keys=@('v','target','check','workspace','clippy','repeat','agility','depth')
+    $actual=@($data.PSObject.Properties.Name)
+    if ($actual.Count -ne $keys.Count -or @($actual | Where-Object { $_ -cnotin $keys }).Count) { throw 'Ismeretlen vagy hiányzó profilmező.' }
+    if ($data.v -isnot [int] -or $data.v -ne 1) { throw 'Nem támogatott profilverzió.' }
+    if ($data.target -isnot [string] -or $data.target.Length -gt 400) { throw 'Érvénytelen tesztcél.' }
+    foreach ($key in @('check','workspace','clippy','agility','depth')) {
+        if ($data.$key -isnot [bool]) { throw "A $key mező csak true vagy false lehet." }
+    }
+    if ($data.repeat -isnot [int] -or $data.repeat -notin @(1,3)) { throw 'Az ismétlés csak 1 vagy 3 lehet.' }
+    if (!$data.check -and !$data.workspace -and !$data.clippy -and !$data.depth) { throw 'Legalább egy teszt szükséges.' }
+    $target=ConvertTo-RevisionTarget $data.target
+    return @{Target=$target;Options=$data}
+}
+function Apply-StudioProfile([string]$json) {
+    if ($modeSwitch.Checked -or (Test-StorageBusy)) { throw 'Profil csak nyugalmi MANUAL módban tölthető be.' }
+    $profile=ConvertFrom-StudioProfile $json
+    $d=$profile.Options
+    $script:revisionTarget=$profile.Target
+    $prAddress.Text=$profile.Target.SourceUrl
+    $combo.SelectedItem=@($combo.Items | Where-Object {$_.Mode -eq 'revision'})[0]
+    Update-TargetControls
+    $prStatus.Text="Betöltve: $($profile.Target.Name)"
+    $ckCheck.Checked=$d.check; $ckTest.Checked=$d.workspace; $ckClippy.Checked=$d.clippy
+    $ckRepeat.Checked=($d.repeat -eq 3); $ckAgility.Checked=$d.agility; $ckDepth.Checked=$d.depth
+    $ckFull.Checked=$false; $ckBench.Checked=$false; $ckWarp.Checked=$false
+    $profileStatus.Text='Profil betöltve. Ellenőrizd a pipákat, majd Futtatás. Semmi nem indult el.'
+}
+function Get-AutoPlan([bool]$d3d) {
+    $plan=@('L0 | Runner / Git / revision','L1 | Build validation')
+    if($d3d){$plan+=@('L2 | D3D12 depth bounds x3')}
+    $plan+=@('L3 | Workspace tests x1','L4 | Strict Clippy')
+    return $plan
+}
+function Get-StepLevel($step) {
+    if($step.Name -match '^L([1-4]) \|'){return [int]$Matches[1]}
+    return 0
+}
+$labTab=New-ReviewPage $tabs 'Test Lab'
+$labPanel=New-Object Windows.Forms.Panel
+$labPanel.Dock='Fill';$labPanel.AutoScroll=$true;$labTab.Controls.Add($labPanel)
+$labLayout=New-Stack $labPanel 'TopDown' $false
+$labLayout.AutoSize=$true;$labLayout.AutoSizeMode='GrowAndShrink';$labLayout.Padding=New-Object Windows.Forms.Padding(18,12,10,12)
+$null=New-Caption $labLayout 'VALIDATION PIPELINE' 18 $cyan $true
+$labHint=New-Caption $labLayout 'AUTO: egy commit, egy cache, egymásra épülő ellenőrzések. MANUAL: saját pipák vagy GPT-profil.' 10 $fg
+$labHint.MaximumSize=New-Object Drawing.Size(520,0)
+$autoProfile=New-Object Windows.Forms.ComboBox
+$autoProfile.Width=300;$autoProfile.DropDownStyle='DropDownList'
+$null=$autoProfile.Items.Add('General Rust workspace')
+$null=$autoProfile.Items.Add('D3D12 / Agility validation')
+$autoProfile.SelectedIndex=0
+$labLayout.Controls.Add($autoProfile)
+$labPlan=New-Object Windows.Forms.ListBox
+$labPlan.Width=400;$labPlan.Height=125;$labPlan.BackColor=$panel;$labPlan.ForeColor=$fg;$labPlan.Font=Font 11
+$labLayout.Controls.Add($labPlan)
+$labState=New-Caption $labLayout 'MANUAL · ready' 11 $cyan $true
+$null=New-Caption $labLayout 'GPT test profile · MANUAL' 12 $fg $true
+$profileBox=New-Object Windows.Forms.TextBox
+$profileBox.Multiline=$true;$profileBox.ScrollBars='Vertical';$profileBox.Width=400;$profileBox.Height=115;$profileBox.MaxLength=4096
+$profileBox.Font=Font 9 'Consolas';$labLayout.Controls.Add($profileBox)
+$profileLoad=New-Action $labLayout 'Profil betöltése' '#245B58' 185
+$profileStatus=New-Caption $labLayout 'JSON v1 · csak ismert mezők · nem futtat parancsot.' 9 $muted
+$profileStatus.MaximumSize=New-Object Drawing.Size(400,0)
+$profileLoad.Add_Click({try{Apply-StudioProfile $profileBox.Text}catch{$profileStatus.Text=$_.Exception.Message}})
+function Update-ExecutionMode {
+    $busy=$script:runState -eq 'RUNNING' -or $script:unsafeState
+    $auto=$modeSwitch.Checked
+    if ($auto -and !(Test-WorkspaceTarget)) { $modeSwitch.Checked=$false; return }
+    $modeSwitch.Text=if($auto){'AUTO  |  MANUAL'}else{'MANUAL  |  AUTO'}
+    $modeSwitch.BackColor=if($auto){Color '#087669'}else{Color '#355764'}
+    $modeSwitch.Enabled=!$busy -and (Test-WorkspaceTarget)
+    $autoProfile.Enabled=$auto -and !$busy -and !(Test-LocalTarget)
+    if(Test-LocalTarget){$autoProfile.SelectedIndex=0}
+    $profileBox.Enabled=!$auto -and !$busy
+    $profileLoad.Enabled=$profileBox.Enabled
+    if($auto){foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckRepeat,$ckAgility,$ckDepth,$ckFull,$ckWarp,$ckBench)){$c.Enabled=$false}}
+    $labPlan.Items.Clear()
+    if($auto){foreach($line in (Get-AutoPlan ($autoProfile.SelectedIndex -eq 1))){$null=$labPlan.Items.Add($line)}}
+    else{$null=$labPlan.Items.Add('MANUAL · kiválasztott ellenőrzések')}
+    if(!$busy){$labState.Text=if($auto){'AUTO · ready'}else{'MANUAL · ready'}}
+}
+$modeSwitch.Add_CheckedChanged({
+    if($modeSwitch.Checked){
+        $target=Get-SelectedRepository
+        if($target -and $target.Origin -ieq $belobugTarget.Origin -and ($target.Branch -eq 'refs/pull/360/head' -or $target.ExpectedSha -eq '2083466bb80691d99b917d09cd9d55084338c55a')){$autoProfile.SelectedIndex=1}
+        $tabs.SelectedTab=$labTab
+    }else{
+        foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckRepeat)){$c.Enabled=$true}
+        Update-TargetControls
+    }
+    Update-ExecutionMode
+})
+$autoProfile.Add_SelectedIndexChanged({Update-ExecutionMode})
+function Write-AutoCheckpoint([int]$level,[string]$state) {
+    if (!$script:machine.AutoMode -or !$runDir) { return }
+    $lines=@("VIREX $studioVersion | AUTO LEVEL $level | $state","Target: $($runPreset.Name)","Commit: $($runPreset.Sha)","Agility staged: $($machine.AgilityStaged)")
+    foreach($entry in $steps){
+        if((Get-StepLevel $entry) -ne $level){continue}
+        $lines+=@("[$($entry.Status)] $($entry.Name) | exit=$($entry.Exit) | $($entry.Seconds)s",$entry.Command)
+        if($entry.Error){$lines+=$entry.Error}
+        $lines+=@(((Read-Shared $entry.Out)+[Environment]::NewLine+(Read-Shared $entry.Err)) -split '\r?\n' | Where-Object {$_ -match 'test result:|error:|FAILED|skipped|Finished'} | Select-Object -Last 40)
+    }
+    [IO.File]::WriteAllText((Join-Path $runDir ("LEVEL-$level.txt")),(Redact ($lines -join [Environment]::NewLine)),[Text.Encoding]::UTF8)
+    $script:levelResults["$level"]=$state
+    $labState.Text="L$level | $state"
+}
+Update-ExecutionMode
