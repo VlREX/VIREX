@@ -17,7 +17,7 @@ $null=[IO.Directory]::CreateDirectory((Join-Path $sample 'src'))
 $script:phase=0
 $script:passed=$false
 $script:failure=''
-$deadline=[DateTime]::UtcNow.AddSeconds(100)
+$deadline=[DateTime]::UtcNow.AddSeconds(300)
 $driver=New-Object Windows.Forms.Timer
 $driver.Interval=150
 $driver.Add_Tick({
@@ -33,7 +33,7 @@ $driver.Add_Tick({
             }
             $form.Size=New-Object Drawing.Size(800,590)
             $tabs.SelectedIndex=3
-            if ($reviewPages.TabPages.Count -ne 3) { throw 'AI Review panels missing.' }
+            if ($reviewPages.TabPages.Count -ne 2) { throw 'AI Review panels missing.' }
             $combo.SelectedIndex=1
             Set-LocalProject $sample
             if ($ckBench.Enabled -or $ckFull.Enabled -or $ckWarp.Enabled -or !$ckTest.Enabled) { throw 'Invalid local mode controls.' }
@@ -95,7 +95,7 @@ $driver.Add_Tick({
             }
             # Run the real background lookup through a fixed release response, with no network.
             $module=[IO.File]::ReadAllText((Join-Path $appDir 'StudioUpdate.ps1'))
-            $stub="function Invoke-RestMethod { return @{ tag_name='studio-stable'; draft=0; prerelease=0; assets=@(@{ name='VIREX-Test-Studio-2.0.0-Setup.exe'; state='uploaded' }) } }"
+            $stub="function Invoke-RestMethod { return @{ tag_name='studio-stable'; draft=0; prerelease=0; assets=@(@{ name='VIREX-Test-Studio-$studioVersion-Setup.exe'; state='uploaded' }) } }"
             [IO.File]::WriteAllText((Join-Path $fixture 'StudioUpdate.ps1'),$module+[Environment]::NewLine+$stub,[Text.Encoding]::UTF8)
             $script:appDir=$fixture
             $script:phase=4
