@@ -316,6 +316,7 @@ function Save-Report {
     $header=@(
         "VIREX TEST STUDIO $studioVersion | LOCAL VERIFICATION"
         ('Status: '+$script:runState)
+        $(if($script:runState -eq 'RUNNER_ERROR'){'Runner verification incomplete; Rust output is provisional, not a confirmed PASS or FAIL.'})
         ('Target: '+$script:runPreset.Name)
         $(if ($script:runPreset.Directory) {
             'Local workspace: ' + $script:runPreset.Directory
@@ -368,7 +369,7 @@ function Start-Next {
     try {
         # Child processes inherit only this process's selected WARP setting.
         $script:proc=[VirexChild]::Start($s.Exe,$s.Args,$workDir,$s.Out,$s.Err)
-    } catch { $s.Status='FAIL'; $s.Exit=$null; $s.Error=$_.Exception.Message; $s.Seconds=0; Add-Log ($s.Error+"`r`n") $red; Set-Idle 'FAIL' }
+    } catch { $s.Status='RUNNER_ERROR'; $s.Exit=$null; $s.Error=$_.Exception.Message; $s.Seconds=0; Add-Log ($s.Error+"`r`n") $red; Set-Idle 'RUNNER_ERROR' }
 }
 $script:timer=New-Object System.Windows.Forms.Timer; $timer.Interval=400
 $timer.Add_Tick({
@@ -428,14 +429,14 @@ $timer.Add_Tick({
     } catch {
         $message=$_.Exception.Message
         Add-Log ("`r`nRunner error: "+$message+"`r`n") $red
-        if($script:active){$script:active.Status='FAIL';$script:active.Error=$message;$script:active.Seconds=[math]::Round(([DateTime]::UtcNow-$script:active.Start).TotalSeconds,2)}
+        if($script:active){$script:active.Status='RUNNER_ERROR';$script:active.Error=$message;$script:active.Seconds=[math]::Round(([DateTime]::UtcNow-$script:active.Start).TotalSeconds,2)}
         if($script:proc){
             # Closing the job requests termination; do not report cancellation as verified.
             $script:unsafeState=$true
             try{$script:proc.RequestStop();$script:proc.Dispose()}catch{}
             Add-Log "`r`nProcess completion unconfirmed. Check Task Manager and restart Studio before another run.`r`n" $red
         }
-        Set-Idle 'FAIL'
+        Set-Idle 'RUNNER_ERROR'
     }
 })
 function Stop-Run {
@@ -477,7 +478,7 @@ function Start-StudioRun {
             $detail = "Commit: $($p.Sha)"
             $script:workDir = $repo
         }
-        $confirm = "Futtatod a kiválasztott ellenőrzéseket? A projekt és a függőségei a Windows-fiókod jogosultságaival futnak.$([Environment]::NewLine)$([Environment]::NewLine)$($p.Name)$([Environment]::NewLine)$detail"
+        $confirm = "Futtatod a kiválasztott ellenőrzéseket? A projekt és a függőségei tetszőleges kódot futtathatnak a Windows-fiókod jogosultságaival. A Studio nem biztonsági sandbox. Csak megbízható forrást futtass.$([Environment]::NewLine)$([Environment]::NewLine)$($p.Name)$([Environment]::NewLine)$detail"
         if (!(Confirm-StudioRun $confirm)) { return }
         $cargo=Tool-Path 'cargo.exe'
         if (!$isLocal) { $git=Tool-Path 'git.exe' }
