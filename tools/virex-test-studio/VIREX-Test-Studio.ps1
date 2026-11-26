@@ -336,6 +336,10 @@ function Save-Report {
         ('Agility SDK staged (files present): '+$script:machine.AgilityStaged)
         ('D3D12 depth bounds requested: '+$script:machine.DepthRequested)
         $(if($script:machine.DepthRequested){'A passing GPU test can return early without exercising hardware; explicit skip messages fail the targeted gate.'})
+        ('Cargo target directory: '+$script:machine.TargetDirectory)
+        ('Free space at start (GiB): '+$script:machine.Storage)
+        ('System-wide hardware samples: '+$script:monitorSamples)
+        $(foreach($key in @('CPU','RAM','GPU','VRAM')) { if($monitorPeak.ContainsKey($key)){ 'Sampled peak '+$key+': '+$monitorPeak[$key]+$(if($key -eq 'VRAM'){' GiB'}else{' %'})} })
         ('Rust test repetitions requested: '+$script:machine.Repeat)
         'Synthetic benchmarks are not game FPS. Validation runner does not upload reports.'
         ''
@@ -364,7 +368,7 @@ function Set-Idle([string]$state) {
     } else { $ckBench.Enabled=[bool]$combo.SelectedItem.Preset.Bench }
     $ckAgility.Enabled=(Test-WorkspaceTarget) -and !(Test-LocalTarget); $ckDepth.Enabled=$ckAgility.Enabled
     $copyButton.Enabled=$false; $copyFullButton.Enabled=$false
-    try {Save-Report; $copyButton.Enabled=$true; $copyFullButton.Enabled=$true} catch {Add-Log ("`r`nREPORT ERROR: "+$_.Exception.Message+"`r`n") $red}
+    try {Save-Report; $copyButton.Enabled=$true; $copyFullButton.Enabled=$true} catch {Add-Log ("`r`nREPORT ERROR: "+$_.Exception.Message+"`r`n") $red; if($reportBox.Text){$copyButton.Enabled=$true} }; Update-StorageDisplay
     Add-Log "`r`n=== $state ===`r`n" $status.ForeColor
     if($script:closeAfterStop -and !$script:unsafeState){$script:closeAfterStop=$false;$form.Close()}
 }
@@ -469,6 +473,7 @@ $copyButton.Add_Click({try{[System.Windows.Forms.Clipboard]::SetText([System.IO.
 $copyFullButton.Add_Click({try{[System.Windows.Forms.Clipboard]::SetText([System.IO.File]::ReadAllText((Join-Path $runDir 'FULL-LOG.txt')));$foot.Text='A teljes napló a vágólapra került.'}catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}})
 $stopButton.Add_Click({Stop-Run})
 function Start-StudioRun {
+    if (Test-StorageBusy) { return }
     try {
         $isLocal = Test-LocalTarget
         $isWorkspace = Test-WorkspaceTarget
@@ -496,6 +501,11 @@ function Start-StudioRun {
         }
         $confirm = "Futtatod a kiválasztott ellenőrzéseket? A projekt és a függőségei tetszőleges kódot futtathatnak a Windows-fiókod jogosultságaival. A Studio nem biztonsági sandbox. Csak megbízható forrást futtass.$([Environment]::NewLine)$([Environment]::NewLine)$($p.Name)$([Environment]::NewLine)$detail"
         if ($ckAgility.Enabled -and $ckAgility.Checked) { $confirm += "`r`n`r`nAgility SDK: a kiválasztott revízió saját cargo xtask agility parancsa fut, hálózati letöltés lehetséges. Elkülönített buildcache." }
+        $plannedTarget=Get-StudioTargetDirectory $isLocal $isWorkspace $p ($ckAgility.Enabled -and $ckAgility.Checked)
+        $spacePath=if($plannedTarget){if([IO.Path]::IsPathRooted($plannedTarget)){$plannedTarget}else{Join-Path $workDir $plannedTarget}}else{Join-Path $workDir 'target'}
+        $space=Get-StorageInfo $spacePath
+        $confirm += "`r`n`r`nCargo cache: $spacePath`r`nSzabad hely: $([math]::Round($space.Cache/1GB,1)) GiB."
+        if($space.Cache -lt 20GB){$confirm += "`r`nFigyelem: 20 GiB alatt a nagy Rust-build elfogyaszthatja a tárhelyet. Ez csak előzetes ellenőrzés."}
         if (!(Confirm-StudioRun $confirm)) { return }
         $cargo=Tool-Path 'cargo.exe'
         if (!$isLocal) { $git=Tool-Path 'git.exe' }
@@ -505,8 +515,9 @@ function Start-StudioRun {
         $script:runDir=Join-Path $reports ($script:started.ToString('yyyyMMdd-HHmmss-fff')+'-'+$runLabel)
         $null=New-Item -ItemType Directory -Path $runDir
         $script:machine=@{CPU='unknown';GPU='unknown';OS='unknown';Warp=($ckWarp.Checked -and !$isWorkspace);Repeat=1;WindowsBuild=$windowsBuild;AgilityRequested=($ckAgility.Enabled -and $ckAgility.Checked);AgilityStaged=$false;DepthRequested=($ckDepth.Enabled -and $ckDepth.Checked)};if($ckRepeat.Checked){$script:machine.Repeat=3}; try{$script:machine.CPU=((Get-CimInstance Win32_Processor | ForEach-Object {$_.Name}) -join '; ');$script:machine.GPU=((Get-CimInstance Win32_VideoController | ForEach-Object {"$($_.Name) ($($_.DriverVersion))"}) -join '; ');$os=Get-CimInstance Win32_OperatingSystem;$script:machine.OS="$($os.Caption) $($os.Version) build $($os.BuildNumber)"}catch{}
+        $script:machine.TargetDirectory=$spacePath; $script:machine.Storage=('cache={0:N1}; reports={1:N1}; temp={2:N1}; cargo={3:N1}' -f ($space.Cache/1GB),($space.Reports/1GB),($space.Temp/1GB),($space.Cargo/1GB)); $script:monitorSamples=0; $script:monitorPeak=@{}
         $script:queue.Clear(); $script:steps.Clear(); $terminal.Clear(); $reportBox.Clear(); $grid.Rows.Clear(); $chartTitle.Text='Az összehasonlításhoz válassz egy mérési sort.'; foreach($bar in $chartBars){$bar.Width=0}; foreach($v in $chartValues){$v.Text='-'}; $script:cancelled=$false
-        $env:CARGO_TERM_COLOR='never';$env:RUST_BACKTRACE='1';$env:GIT_TERMINAL_PROMPT='0';$env:CARGO_TARGET_DIR=if ($isLocal) { $script:inheritedTargetDir } elseif ($isWorkspace) { $suffix=if($script:machine.AgilityRequested){'-agility'}else{''}; Join-Path $root ('cache\'+$p.CacheId+$suffix) } else { Join-Path $root 'target' }
+        $env:CARGO_TERM_COLOR='never';$env:RUST_BACKTRACE='1';$env:GIT_TERMINAL_PROMPT='0';$env:CARGO_TARGET_DIR=$plannedTarget
         if($ckWarp.Checked -and !$isWorkspace){$env:VICTORY_D3D12_WARP='1';$env:VICTORY_WARP='1'}else{Remove-Item Env:VICTORY_D3D12_WARP,Env:VICTORY_WARP -ErrorAction SilentlyContinue}
         $cmd=Join-Path $env:SystemRoot 'System32\cmd.exe'
         Add-Step 'Runner self-test (expected exit 0)' $cmd '/d /c "echo VIREX_STDOUT & echo VIREX_STDERR 1>&2 & exit /b 0"' 'runner0'
@@ -548,11 +559,12 @@ function Start-StudioRun {
         }
         $welcome.Visible=$false
         $updateButton.Enabled=$false;$openSource.Enabled=$false;$script:runState='RUNNING';$status.Text='Futtatás…';$status.ForeColor=$cyan;$progress.Maximum=$script:queue.Count;$progress.Value=0;$combo.Enabled=$false;$runButton.Enabled=$false;$stopButton.Enabled=$true;$copyButton.Enabled=$false;$copyFullButton.Enabled=$false
-        foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckFull,$ckWarp,$ckBench,$ckRepeat,$ckAgility,$ckDepth)){$c.Enabled=$false};$tabs.SelectedIndex=0;Add-Log "VIREX local validation | $($p.Name)`r`n$detail`r`n" $cyan;Start-Next
+        foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckFull,$ckWarp,$ckBench,$ckRepeat,$ckAgility,$ckDepth)){$c.Enabled=$false};Update-StorageDisplay;$tabs.SelectedIndex=0;Add-Log "VIREX local validation | $($p.Name)`r`n$detail`r`n" $cyan;Start-Next
     } catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Unable to start')|Out-Null; if($script:runState -eq 'RUNNING'){Set-Idle 'FAIL'} }
 }
 $runButton.Add_Click({Start-StudioRun})
 $form.Add_FormClosing({param($sender,$e)
+    if($script:cacheWorker){$e.Cancel=$true; $foot.Text='A cache művelet még fut.'; return}
     if($script:runState -eq 'RUNNING'){
         $e.Cancel=$true
         if($script:closeAfterStop){return}
@@ -566,7 +578,7 @@ $form.Add_Shown({
     $combo.Select()
 })
 $timer.Start()
-try{[void]$form.ShowDialog()}finally{$timer.Stop();$timer.Dispose();$updateTimer.Stop();$updateTimer.Dispose();if ($updateWorker) { $null=$updateWorker.BeginStop($null,$null) };if($script:proc){try{$script:proc.Dispose()}catch{}};$script:mutex.ReleaseMutex();$script:mutex.Dispose();$form.Dispose()}
+try{[void]$form.ShowDialog()}finally{$timer.Stop();$timer.Dispose();$storageTimer.Stop();$storageTimer.Dispose();if($monitorWorker){$null=$monitorWorker.BeginStop($null,$null)};$updateTimer.Stop();$updateTimer.Dispose();if ($updateWorker) { $null=$updateWorker.BeginStop($null,$null) };if($script:proc){try{$script:proc.Dispose()}catch{}};$script:mutex.ReleaseMutex();$script:mutex.Dispose();$form.Dispose()}
 
 if ($script:pendingSetup) {
     try { Start-VerifiedSetup $script:pendingSetup $script:updateOffer.Hash }
