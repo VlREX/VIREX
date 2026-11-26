@@ -457,6 +457,17 @@ $profileLoad=New-Action $labLayout 'Profil betöltése' '#245B58' 185
 $profileStatus=New-Caption $labLayout 'JSON v1 · csak ismert mezők · nem futtat parancsot.' 9 $muted
 $profileStatus.MaximumSize=New-Object Drawing.Size(400,0)
 $profileLoad.Add_Click({try{Apply-StudioProfile $profileBox.Text}catch{$profileStatus.Text=$_.Exception.Message}})
+function Update-LabProgress([int]$runningLevel=-1) {
+    $labPlan.BeginUpdate()
+    try {
+        $labPlan.Items.Clear()
+        foreach($line in (Get-AutoPlan ($autoProfile.SelectedIndex -eq 1))){
+            $id=$line.Substring(1,1)
+            $result=if($levelResults.ContainsKey($id)){$levelResults[$id]}elseif([int]$id -eq $runningLevel){'RUNNING'}else{'PENDING'}
+            $null=$labPlan.Items.Add("$line  [$result]")
+        }
+    } finally {$labPlan.EndUpdate()}
+}
 function Update-ExecutionMode {
     $busy=$script:runState -eq 'RUNNING' -or $script:unsafeState
     $auto=$modeSwitch.Checked
@@ -470,12 +481,13 @@ function Update-ExecutionMode {
     $profileLoad.Enabled=$profileBox.Enabled
     if($auto){foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckRepeat,$ckAgility,$ckDepth,$ckFull,$ckWarp,$ckBench)){$c.Enabled=$false}}
     $labPlan.Items.Clear()
-    if($auto){foreach($line in (Get-AutoPlan ($autoProfile.SelectedIndex -eq 1))){$null=$labPlan.Items.Add($line)}}
+    if($auto){Update-LabProgress}
     else{$null=$labPlan.Items.Add('MANUAL · kiválasztott ellenőrzések')}
     if(!$busy){$labState.Text=if($auto){'AUTO · ready'}else{'MANUAL · ready'}}
 }
 $modeSwitch.Add_CheckedChanged({
     if($modeSwitch.Checked){
+        $script:levelResults=@{}
         $target=Get-SelectedRepository
         if($target -and $target.Origin -ieq $belobugTarget.Origin -and ($target.Branch -eq 'refs/pull/360/head' -or $target.ExpectedSha -eq '2083466bb80691d99b917d09cd9d55084338c55a')){$autoProfile.SelectedIndex=1}
         $tabs.SelectedTab=$labTab
@@ -485,7 +497,7 @@ $modeSwitch.Add_CheckedChanged({
     }
     Update-ExecutionMode
 })
-$autoProfile.Add_SelectedIndexChanged({Update-ExecutionMode})
+$autoProfile.Add_SelectedIndexChanged({if($script:runState -ne 'RUNNING'){$script:levelResults=@{}};Update-ExecutionMode})
 function Write-AutoCheckpoint([int]$level,[string]$state) {
     if (!$script:machine.AutoMode -or !$runDir) { return }
     $lines=@("VIREX $studioVersion | AUTO LEVEL $level | $state","Target: $($runPreset.Name)","Commit: $($runPreset.Sha)","Agility staged: $($machine.AgilityStaged)")
@@ -498,5 +510,6 @@ function Write-AutoCheckpoint([int]$level,[string]$state) {
     [IO.File]::WriteAllText((Join-Path $runDir ("LEVEL-$level.txt")),(Redact ($lines -join [Environment]::NewLine)),[Text.Encoding]::UTF8)
     $script:levelResults["$level"]=$state
     $labState.Text="L$level | $state"
+    Update-LabProgress
 }
 Update-ExecutionMode
