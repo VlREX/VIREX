@@ -1,35 +1,23 @@
 import unittest
 import tempfile
 from pathlib import Path
-from ai_review import claude, gpt, read_evidence, prompt, safe_display, LIMIT
+from ai_review import gpt, read_evidence, prompt, safe_display, LIMIT
 
 class BridgeTests(unittest.TestCase):
-    def test_claude_payload(self):
-        def send(url, headers, payload):
-            self.assertEqual(url, 'https://api.anthropic.com/v1/messages')
-            self.assertEqual(headers['x-api-key'], 'fake')
-            self.assertIn('sample evidence', payload['messages'][0]['content'])
-            return {'stop_reason':'end_turn','content':[{'type':'text','text':'review'}],'usage':{'input_tokens':3}}
-        self.assertEqual(claude('model','fake','sample evidence',send)[0],'review')
     def test_gpt_payload(self):
         def send(url, headers, payload):
             self.assertEqual(url,'https://api.openai.com/v1/responses')
             self.assertEqual(headers['Authorization'],'Bearer fake')
             self.assertFalse(payload['store'])
-            self.assertIn('peer finding',payload['input'])
             self.assertIn('original evidence',payload['input'])
             return {'status':'completed','output':[{'type':'message','content':[{'type':'output_text','text':'verdict'}]}]}
-        self.assertEqual(gpt('model','fake','original evidence','peer finding',send)[0],'verdict')
+        self.assertEqual(gpt('model','fake','original evidence',send)[0],'verdict')
     def test_reject_truncation(self):
         with self.assertRaises(ValueError):
-            claude('m','k','e',lambda *args: {'stop_reason':'max_tokens','content':[]})
-        with self.assertRaises(ValueError):
-            gpt('m','k','e','p',lambda *args: {'status':'incomplete'})
+            gpt('m','k','e',lambda *args: {'status':'incomplete'})
     def test_reject_empty_response(self):
         with self.assertRaises(ValueError):
-            claude('m','k','e',lambda *args: {'stop_reason':'end_turn','content':[]})
-        with self.assertRaises(ValueError):
-            gpt('m','k','e','p',lambda *args: {'status':'completed','output':[]})
+            gpt('m','k','e',lambda *args: {'status':'completed','output':[]})
     def test_evidence(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'e.txt'; p.write_text('árvíztűrő',encoding='utf-8-sig')
@@ -39,7 +27,7 @@ class BridgeTests(unittest.TestCase):
             p.write_text('x'*(LIMIT+1),encoding='utf-8')
             with self.assertRaises(ValueError): read_evidence(p)
     def test_untrusted_text_and_terminal(self):
-        self.assertIn('peer_review',prompt('e','p'))
+        self.assertIn('evidence',prompt('e'))
         self.assertNotIn('\x1b',safe_display('\x1b[2J'))
 
 if __name__ == '__main__': unittest.main()
