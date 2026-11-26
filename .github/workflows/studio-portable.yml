@@ -1,0 +1,94 @@
+name: Publish VIREX Test Studio portable
+
+on:
+  push:
+    branches:
+      - 'release/studio-*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: virex-studio-portable-publish
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'VlREX/VIREX' && startsWith(github.ref, 'refs/heads/release/studio-')
+    runs-on: windows-latest
+    timeout-minutes: 12
+    outputs:
+      asset: ${{ steps.package.outputs.asset }}
+      sha256: ${{ steps.package.outputs.sha256 }}
+    defaults:
+      run:
+        working-directory: tools/virex-test-studio
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check release version and generate the artwork
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$' -or $env:GITHUB_REF_NAME -cne "release/studio-$version") {
+              throw 'The release branch must match the Studio version.'
+          }
+          python -m pip install --disable-pip-version-check --only-binary=:all: Pillow==12.3.0
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python packaging/make_icons.py
+      - name: Check updater and review bridge
+        run: |
+          .\tests\Update.Tests.ps1
+          python -m unittest -v test_ai_review
+      - name: Package the portable Windows release
+        id: package
+        run: |
+          $hash = .\packaging\Build-Portable.ps1
+          $asset = Split-Path -Leaf $hash.Path
+          @("asset=$asset", "sha256=$($hash.Hash.ToLowerInvariant())") | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studio-windows
+          path: tools/virex-test-studio/artifacts/portable/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: studio-windows
+          path: package
+      - name: Publish and verify the Windows ZIP
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ASSET: ${{ needs.build.outputs.asset }}
+          EXPECTED: ${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          echo "$EXPECTED  package/$ASSET" | sha256sum --check --strict
+          tag=studio-stable
+          if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+            if ! gh release view "$tag" --json assets --jq '.assets[].name' | grep -Fxq -- "$ASSET"; then
+              gh release upload "$tag" "package/$ASSET" --repo "$GH_REPO"
+            fi
+          else
+            gh release create "$tag" "package/$ASSET" --repo "$GH_REPO" --target "$GITHUB_SHA" --latest=false \
+              --title "VIREX Test Studio – Windows" \
+              --notes "Töltsd le a verziózott Windows ZIP-et, csomagold ki, majd indítsd el a VIREX-Test-Studio.exe fájlt. A csomag tartalmazza a forráskódot és a magyar README-t. A Belobug tesztcél az a-publier ágat használja."
+          fi
+          mkdir verified
+          gh release download "$tag" --repo "$GH_REPO" --pattern "$ASSET" --dir verified
+          echo "$EXPECTED  verified/$ASSET" | sha256sum --check --strict
