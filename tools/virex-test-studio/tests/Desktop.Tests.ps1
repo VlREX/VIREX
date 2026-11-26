@@ -30,7 +30,7 @@ $driver.Add_Tick({
             if (!$storageChoose.Enabled -or !$storageClean.Enabled -or !$storageMeasure.Enabled) { throw 'Storage controls missing.' }
             $rejected=$false; try { Assert-StorageSpace 4GB 2GB 2GB 2GB } catch { $rejected=$true }; if(!$rejected){throw 'Low disk guard failed.'}
             Assert-StorageSpace 30GB 2GB 2GB 2GB
-            $alternate=Select-CacheRoot $fixture
+            $script:alternate=Select-CacheRoot $fixture
             Set-CacheRoot $alternate
             if (!(Test-CacheRoot $alternate) -or (Get-StudioTargetDirectory $false $true $belobugTarget $true) -ne (Join-Path $alternate ('cache\'+$belobugTarget.CacheId+'-agility'))) {throw 'Alternate cache routing failed.'}
             if ((Get-StudioTargetDirectory $true $true $belobugTarget $false) -ne $inheritedTargetDir) {throw 'Local target changed.'}
@@ -193,6 +193,11 @@ fn main() {
             if ($runState -ne 'PASS' -or !$machine.AgilityStaged -or !$env:CARGO_TARGET_DIR.EndsWith('-agility') -or @($steps | Where-Object { $_.Kind -eq 'depthtest' -and $_.Status -eq 'PASS' }).Count -ne 3 -or !$report.Contains('Agility SDK staged (files present): True')) { throw $report }
             if (!$env:CARGO_TARGET_DIR.StartsWith($alternate,[StringComparison]::OrdinalIgnoreCase)) {throw 'Actual build did not use alternate cache.'}
             if (Test-StagedAgility ($env:CARGO_TARGET_DIR.Substring(0,$env:CARGO_TARGET_DIR.Length-8))) { throw 'Agility polluted the baseline cache.' }
+            $script:phase=33
+            Start-CacheOperation $false
+            if(!$cacheWorker -or $runButton.Enabled -or $updateButton.Enabled){throw 'Cache worker gating failed.'}
+        } elseif ($script:phase -eq 33 -and !$script:cacheWorker) {
+            if($storageResult.Text -notlike 'Cache mérete:*' -or !$runButton.Enabled -or !$updateButton.Enabled){throw "Cache measurement failed: $($storageResult.Text)"}
             # Run the real background lookup through a fixed release response, with no network.
             $module=[IO.File]::ReadAllText((Join-Path $appDir 'StudioUpdate.ps1'))
             $stub="function Invoke-RestMethod { return @{ tag_name='studio-stable'; draft=0; prerelease=0; assets=@(@{ name='VIREX-Test-Studio-$studioVersion-Setup.exe'; state='uploaded' }) } }"
