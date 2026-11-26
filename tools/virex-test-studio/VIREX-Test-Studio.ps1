@@ -345,7 +345,7 @@ function Save-Report {
         $exitText=if($null -eq $step.Exit){'UNAVAILABLE'}else{[string]$step.Exit}; $head="[$($step.Status)] $($step.Name) | exit=$exitText | $($step.Seconds)s`r`n$($step.Command)"; if($step.Error){$head+="`r`nRunner detail: $($step.Error)"}; $null=$brief.AppendLine($head); $null=$full.AppendLine($head)
         $out=Read-Shared $step.Out; $err=Read-Shared $step.Err
         $null=$full.AppendLine("--- stdout ---`r`n$out`r`n--- stderr ---`r`n$err")
-        $lines=@(($out+"`n"+$err) -split '\r?\n' | Where-Object {$_ -match 'test result:|\bPASS:|^density=|^changed=|^case=|^kind=|^mode=|error\[|error:|warning:|panicked at|FAILED|Finished|^rustc |^cargo |^git version|^[a-f0-9]{40}$|^AVX2 supported'})
+        $lines=@(($out+"`n"+$err) -split '\r?\n' | Where-Object {$_ -match 'test result:|\bPASS:|^density=|^changed=|^case=|^kind=|^mode=|error\[|error:|warning:|panicked at|FAILED|Finished|^rustc |^cargo |^git version|^[a-f0-9]{40}$|^AVX2 supported|D3D12 Agility SDK|depth_bounds_pipeline_loads_and_filters_draws|no host depth bounds support|no PC dxc.exe'})
         if($step.Status -ne 'PASS'){$lines+=@(($out+"`n"+$err) -split '\r?\n' | Select-Object -Last 35)}
         foreach($line in $lines){$null=$brief.AppendLine($line)}; $null=$brief.AppendLine('')
     }
