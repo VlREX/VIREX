@@ -174,7 +174,7 @@ function Test-CacheRoot([string]$path) {
     try {
         $full=[IO.Path]::GetFullPath($path)
         if (!(Test-PlainDirectory $full)) { return $false }
-        $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($full))
+        $drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($full))
         if (!$drive.IsReady -or $drive.DriveType -ne 'Fixed') { return $false }
         if ($full -ieq $defaultCacheRoot) { return $true }
         if ([IO.Path]::GetFileName($full) -cne 'VIREX-Studio-Cache') { return $false }
@@ -206,18 +206,18 @@ if (Test-Path -LiteralPath $cacheSetting -PathType Leaf) {
 }
 function Get-FreeBytes([string]$path) {
     $full=[IO.Path]::GetFullPath($path)
-    $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($full))
+    $drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($full))
     if (!$drive.IsReady) { throw 'A meghajtó nem elérhető.' }
     return [long]$drive.AvailableFreeSpace
 }
 function Get-StudioTargetDirectory([bool]$local,[bool]$workspace,$target,[bool]$agility) {
     if ($local) { return $script:inheritedTargetDir }
     if (!(Test-CacheRoot $cacheRoot)) { throw 'A cache-mappa nem elérhető vagy nem biztonságos.' }
-    if ($workspace) {
-        $suffix=if($agility){'-agility'}else{''}
-        return Join-Path $cacheRoot ('cache\'+$target.CacheId+$suffix)
-    }
-    return Join-Path $cacheRoot 'target'
+    $path=if($workspace){$suffix=if($agility){'-agility'}else{''};Join-Path $cacheRoot ('cache\'+$target.CacheId+$suffix)}else{Join-Path $cacheRoot 'target'}
+    $ancestor=$path
+    while (!(Test-Path -LiteralPath $ancestor)) { $ancestor=Split-Path -Parent $ancestor }
+    if (!(Test-PlainDirectory $ancestor)) { throw 'Átirányított cache nem használható.' }
+    return $path
 }
 function Assert-StorageSpace([long]$cacheFree,[long]$systemFree,[long]$tempFree,[long]$cargoFree) {
     if ($systemFree -lt 1GB -or $tempFree -lt 1GB -or $cargoFree -lt 1GB) { throw 'Kevés hely a riport, TEMP vagy Cargo home meghajtóján (minimum 1 GiB). Szabadíts fel helyet.' }
