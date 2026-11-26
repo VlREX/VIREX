@@ -28,6 +28,8 @@ $driver.Add_Tick({
             if ($combo.Items.Count -ne 21 -or $tabs.TabPages.Count -ne 5) { throw 'Missing target or workspace tab.' }
             if (!$updateButton.Enabled -or $ckBench.Enabled -or $combo.SelectedItem.Mode -ne 'belobug') { throw 'Startup controls unavailable.' }
             if (!$ckAgility.Enabled -or !$ckDepth.Enabled -or $ckAgility.Checked -or $ckDepth.Checked) { throw 'Agility and depth options must be opt-in.' }
+            $depthOutput="test pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws ... ok`r`ntest result: ok. 1 passed; 0 failed; 0 ignored"
+            if (!(Test-DepthResult $depthOutput '') -or (Test-DepthResult $depthOutput 'no PC dxc.exe; skipped') -or (Test-DepthResult $depthOutput 'no host depth bounds support; skipped') -or (Test-DepthResult 'test result: ok. 0 passed; 0 failed; 0 ignored' '')) { throw 'Depth result gate regression.' }
             if ($PreviewPath) {
                 $bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height)
                 try { $form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height))); $bitmap.Save($PreviewPath,[Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
