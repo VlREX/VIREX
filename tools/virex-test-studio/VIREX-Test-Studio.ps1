@@ -431,7 +431,7 @@ $timer.Add_Tick({
             if(!$valid){$s.Error='Agility parancs sikeres, de a szükséges debug/D3D12 DLL-ek hiányoznak.'}
         }
         if($valid -and $s.Kind -eq 'depthtest') {
-            $valid=($out -match 'test result: ok\. 1 passed; 0 failed') -and ($out -match 'test pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws \.\.\. ok') -and (($out+"`n"+$err) -notmatch '(?im)no host depth bounds support; skipped|no PC dxc\.exe; skipped')
+            $valid=Test-DepthResult $out $err
             if(!$valid){$s.Error='A pontos GPU-teszt nem igazolható, vagy a teszt kihagyást jelzett.'}
         }
         if($valid -and $s.Kind -eq 'tests'){$valid=($out -match 'test result: ok\. [1-9][0-9]* passed; 0 failed')}
