@@ -35,7 +35,7 @@ function New-Option($parent, [string]$text, [bool]$selected) {
 function Set-StudioTabStyle($control) {
     $control.DrawMode='OwnerDrawFixed'
     $control.SizeMode='Fixed'
-    $control.ItemSize=New-Object Drawing.Size(83,35)
+    $control.ItemSize=New-Object Drawing.Size(104,36)
     $control.Add_DrawItem({
         param($owner,$event)
         if ($event.Index -lt 0) { return }
@@ -73,7 +73,7 @@ function Add-StartPanel($page) {
     $line.Margin=New-Object Windows.Forms.Padding(0,13,0,10)
     $stack.Controls.Add($line)
     $null=New-Caption $stack 'Első futtatás' 13 $fg $true
-    $hint=New-Caption $stack 'A bal oldalon válaszd ki az ellenőrzéseket, majd kattints a Futtatás gombra. A parancsok kimenete itt jelenik meg.' 10 $muted
+    $hint=New-Caption $stack 'AUTO módban a Test Lab vezeti végig a tesztszinteket. MANUAL módban pipákkal vagy GPT-profillal állíthatod be a futtatást.' 10 $muted
     $hint.MaximumSize=New-Object Drawing.Size(320,0)
     $localLink=New-Action $stack 'Helyi projekt megnyitása…' '#285360' 207
     $localLink.Margin=New-Object Windows.Forms.Padding(0,15,0,4)
@@ -83,14 +83,14 @@ function Add-StartPanel($page) {
     return $surface
 }
 
-$ink = Color '#172B38'
-$inkMuted = Color '#425B63'
+$ink = Color '#E5EDF7'
+$inkMuted = Color '#A5B5CA'
 $form = New-Object Windows.Forms.Form
 $form.Text = "VIREX Test Studio  $studioVersion"
 $form.StartPosition = 'CenterScreen'
 $form.AutoScaleMode = 'Dpi'
 $form.AutoScaleDimensions = New-Object Drawing.SizeF(96,96)
-$form.ClientSize = New-Object Drawing.Size(1136,730)
+$form.ClientSize = New-Object Drawing.Size(1260,800)
 $form.MinimumSize = New-Object Drawing.Size(740,525)
 $form.BackColor = $bg
 $form.ForeColor = $fg
@@ -133,7 +133,7 @@ $layout.Controls.Add($body,0,1)
 $sidePanel = New-Object Windows.Forms.Panel
 $sidePanel.Dock='Fill'
 $sidePanel.AutoScroll=$true
-$sidePanel.BackColor=Color '#EDF3F2'
+$sidePanel.BackColor=Color '#172D39'
 $sidePanel.Margin=[Windows.Forms.Padding]::Empty
 $body.Controls.Add($sidePanel,0,0)
 $sidebar = New-Stack $sidePanel 'TopDown' $false
@@ -164,8 +164,16 @@ $openSource=New-Action $sidebar 'Forrás megnyitása' '#355764' 194 30
 $rule=New-Object Windows.Forms.Panel
 $rule.Size=New-Object Drawing.Size(242,1)
 $rule.Margin=New-Object Windows.Forms.Padding(0,12,0,8)
-$rule.BackColor=Color '#CAD9D8'
+$rule.BackColor=Color '#395563'
 $sidebar.Controls.Add($rule)
+$null=New-Caption $sidebar 'Futtatási mód' 13 $ink $true
+$modeSwitch=New-Object Windows.Forms.CheckBox
+$modeSwitch.Appearance='Button';$modeSwitch.FlatStyle='Flat';$modeSwitch.FlatAppearance.BorderSize=0
+$modeSwitch.UseVisualStyleBackColor=$false;$modeSwitch.TextAlign='MiddleCenter'
+$modeSwitch.Font=Font 11 'Segoe UI' $true;$modeSwitch.ForeColor=$fg
+$modeSwitch.BackColor=Color '#355764';$modeSwitch.Size=New-Object Drawing.Size(240,40)
+$modeSwitch.Text='MANUAL  |  AUTO';$modeSwitch.Cursor=[Windows.Forms.Cursors]::Hand
+$sidebar.Controls.Add($modeSwitch)
 $null=New-Caption $sidebar 'Ellenőrzések' 14 $ink $true
 $ckCheck=New-Option $sidebar 'Fordításellenőrzés' $true
 $ckTest=New-Option $sidebar 'Célzott tesztek' $true
