@@ -1,6 +1,6 @@
-# VIREX Test Studio 2.1.2
+# VIREX Test Studio 2.2.0
 
-[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-stable/VIREX-Test-Studio-2.1.2-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-stable)
+[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-stable/VIREX-Test-Studio-2.2.0-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-stable)
 
 Magyar nyelvű Windows-alkalmazás Rust-projektek teszteléséhez. A kezdőképernyőn a **Belobug · VIctory AMD** cél van kiválasztva. A Studio lekéri az `a-publier` ágat, külön munkapéldányban futtatja a kiválasztott Cargo-ellenőrzéseket, és a riportba írja a ténylegesen tesztelt commitot. A saját fejlesztői példányodat a **Helyi projekt megnyitása** gombbal tudod tesztelni.
 
@@ -20,6 +20,18 @@ python .\packaging\make_icons.py
 3. A teszteléshez legyen a PATH-on a Cargo és a Rust fordító. GitHub-célhoz Git is kell. A Clippy jelölőnégyzethez a használt Rust-toolchain Clippy komponense szükséges. A Belobug Windows-buildjéhez a repo által rögzített Rust-toolchain és az MSVC C++ buildeszközök szükségesek.
 4. Első Belobug-próbának elég a **Fordításellenőrzés**. Kapcsold ki a munkaterület-teszteket és a Clippyt, ha csak a buildkörnyezetet szeretnéd ellenőrizni. Kattints a **Futtatás** gombra, nézd át a cél URL-jét és az ágat, majd erősítsd meg. A függőségek és a toolchain első letöltése időt igényelhet.
 5. A **Napló** mutatja az aktív parancsot. Befejezés után a **Riport** fülön látható az összesítés. A **Riportmappa** gombbal megnyithatók a pontos parancsok, kilépési kódok és a nyers kimenetek. Az **F1** ezt a fájlt nyitja meg.
+
+## 2.2.0 – AUTO / MANUAL Test Lab
+
+Az AUTO mód a Rust workspace célokra érhető el; a régi egyedi benchmark presetek MANUAL módban maradnak. Válaszd ki a PR-t vagy a workspace-t, kapcsold AUTO-ra a módválasztót, és válassz General Rust vagy D3D12/Agility profilt. A Belobug #360 kiválasztása után AUTO-ra váltáskor a D3D12 profil az alapértelmezett. Egyetlen jóváhagyás után L0: runner és revízió, L1: Agility (D3D12 profil) és check, L2: pontos GPU-teszt háromszor (D3D12 profil), L3: teljes workspace-teszt egyszer, L4: strict Clippy. A tesztek ugyanazt a checkoutot és cache-t használják; nincs ismételt fetch vagy újraindítás. A Cargo saját párhuzamosítását és inkrementális fordítását használjuk, nem erőltetjük az összes CPU-magot vagy párhuzamos GPU-tesztfolyamatokat. Hibánál megáll, a későbbi szintek NOT RUN állapotúak. A riportmappában szintenként LEVEL-N.txt, végül összesített riport és nyers naplók. A Clippy előzetesen meglévő figyelmeztetés miatt is megállhat. 
+
+MANUAL módban a Test Lab GPT test profile mezőjébe másolható a következő JSON v1 (a cél lehet PR-, branch- vagy teljes commit-link):
+
+```json
+{"v":1,"target":"https://github.com/Belobug/VIctory-Belobug-AMD/pull/360","check":true,"workspace":true,"clippy":false,"repeat":1,"agility":true,"depth":true}
+```
+
+A profil csak a felsorolt mezőket fogadja, nem futtat beillesztett shell-parancsot vagy tetszőleges Cargo-argumentumokat, nem indít tesztet automatikusan. A felhasználó ellenőrzi a beállításokat és jóváhagyja a futtatást. Nincs közvetlen ChatGPT API-üzenetküldés vagy automatikus feltöltés; a riportot kézzel lehet másolni. Az upstream kód futtatása továbbra sem sandboxolt.
 
 ## 2.1.2 – Tárhely és hardver
 
