@@ -1,6 +1,6 @@
-# VIREX Test Studio 2.0.1
+# VIREX Test Studio 2.1.0
 
-[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-stable/VIREX-Test-Studio-2.0.1-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-stable)
+[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-stable/VIREX-Test-Studio-2.1.0-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-stable)
 
 Magyar nyelvű Windows-alkalmazás Rust-projektek teszteléséhez. A kezdőképernyőn a **Belobug · VIctory AMD** cél van kiválasztva. A Studio lekéri az `a-publier` ágat, külön munkapéldányban futtatja a kiválasztott Cargo-ellenőrzéseket, és a riportba írja a ténylegesen tesztelt commitot. A saját fejlesztői példányodat a **Helyi projekt megnyitása** gombbal tudod tesztelni.
 
@@ -20,6 +20,10 @@ python .\packaging\make_icons.py
 3. A teszteléshez legyen a PATH-on a Cargo és a Rust fordító. GitHub-célhoz Git is kell. A Clippy jelölőnégyzethez a használt Rust-toolchain Clippy komponense szükséges. A Belobug Windows-buildjéhez a repo által rögzített Rust-toolchain és az MSVC C++ buildeszközök szükségesek.
 4. Első Belobug-próbának elég a **Fordításellenőrzés**. Kapcsold ki a munkaterület-teszteket és a Clippyt, ha csak a buildkörnyezetet szeretnéd ellenőrizni. Kattints a **Futtatás** gombra, nézd át a cél URL-jét és az ágat, majd erősítsd meg. A függőségek és a toolchain első letöltése időt igényelhet.
 5. A **Napló** mutatja az aktív parancsot. Befejezés után a **Riport** fülön látható az összesítés. A **Riportmappa** gombbal megnyithatók a pontos parancsok, kilépési kódok és a nyers kimenetek. Az **F1** ezt a fájlt nyitja meg.
+
+## 2.1.0 – PR Manager
+
+A PR Manager fülön illeszd be a GitHub PR-, branch- vagy teljes commit-linket, majd válaszd a **Tesztcél betöltése** gombot. A meglévő Cargo ellenőrzéseket a **Futtatás** gomb indítja, külön jóváhagyással. A PR URL a GitHub által közzétett refs/pull/N/head revíziót tölti le, nem a merge commitot. A branch és PR aktuális revíziója változhat; a riport és a run.json rögzíti a tényleges SHA-t. Teljes commit-linknél eltérő SHA esetén nincs teszt. A Studio nem nyit PR-t és nem pushol, valamint nem futtat automatikusan kódot a link megadásakor. A forrásnak továbbra is megbízhatónak kell lennie. A stabil frissítési csatorna változatlan.
 
 ## 2.0.1 változások
 
@@ -122,7 +126,7 @@ A `.github/workflows/studio-portable.yml` a `release/studio-X.Y.Z` nevű kiadás
 powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\packaging\Build.ps1
 ```
 
-3. A kimenet `artifacts\installer\VIREX-Test-Studio-2.0.1-Setup.exe`, a verziószám a `VERSION` értékét követi. A szkript kiírja a végleges fájl SHA-256 értékét. Ha a kiadó aláírja a telepítőt, a már aláírt bájtokat kell feltölteni. A telepítő stabil AppId-ja biztosítja az egymásra telepíthetőséget.
+3. A kimenet `artifacts\installer\VIREX-Test-Studio-2.1.0-Setup.exe`, a verziószám a `VERSION` értékét követi. A szkript kiírja a végleges fájl SHA-256 értékét. Ha a kiadó aláírja a telepítőt, a már aláírt bájtokat kell feltölteni. A telepítő stabil AppId-ja biztosítja az egymásra telepíthetőséget.
 4. Egy külön Windows-felhasználónál ellenőrizd a tiszta telepítést, a Start menüs indítást, a meglévő riportok elérését, majd a régebbi telepített verzióról történő frissítést és az eltávolítást.
 5. Amikor a tulajdonos kiadást kér, a **VlREX/VIREX** repó **studio-stable** címkéjű stabil GitHub Release-éhez töltsd fel a verziózott telepítőt release assetként. A kliens az ottani legmagasabb verziót ajánlja fel. A kiadás közzététele után ellenőrizd egy korábbi telepített példányon a letöltés, bezárás, telepítés és újraindítás teljes menetét.
 
