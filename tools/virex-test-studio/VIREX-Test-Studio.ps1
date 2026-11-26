@@ -441,11 +441,13 @@ $timer.Add_Tick({
         if($valid -and $s.Kind -eq 'tests'){$valid=($out -match 'test result: ok\. [1-9][0-9]* passed; 0 failed')}
         if($valid -and $s.Kind -eq 'bench'){Bench-Rows $out; $valid=($out -match 'PASS:') -and ($grid.Rows.Count -gt 0)}
         if($valid -and $s.Kind -eq 'cargo_bench'){Bench-Rows $out; $valid=($out -match 'PASS:') -and ($out -match 'test result: ok\. 1 passed; 0 failed') -and ($grid.Rows.Count -eq $script:runPreset.BenchCount)}
-        $s.Status=if($script:cancelled){'CANCELLED'}elseif($valid){'PASS'}else{'FAIL'}
+        $storageFailure=(!$valid -and (($out+"`n"+$err) -match '(?i)no space (left )?on device|not enough space on (the )?disk|disk full|Nincs elég hely a lemezen'))
+        if($storageFailure){$s.Error='Tárhelyhiba: a fordítási eredmény nem értékelhető. Szabadíts fel helyet a Tárhely / hardver fülön.'}
+        $s.Status=if($script:cancelled){'CANCELLED'}elseif($storageFailure){'RUNNER_ERROR'}elseif($valid){'PASS'}else{'FAIL'}
         if(!$valid -and $s.Exit -eq 0 -and !$s.Error){$s.Error="Validation gate failed ($($s.Kind))"; Add-Log "`r`nValidation gate failed ($($s.Kind)): inspect stdout before continuing.`r`n" $red}
         $script:proc.Dispose();$script:proc=$null;$script:active=$null; $progress.Value=[math]::Min($script:steps.Count,$progress.Maximum)
         $col=$green;if(!$valid){$col=$red}; Add-Log "`r`n$($s.Status) | exit $($s.Exit) | $($s.Seconds)s`r`n" $col
-        if($script:cancelled){Set-Idle 'CANCELLED'}elseif(!$valid){Set-Idle 'FAIL'}else{Start-Next}
+        if($script:cancelled){Set-Idle 'CANCELLED'}elseif($storageFailure){Set-Idle 'RUNNER_ERROR'}elseif(!$valid){Set-Idle 'FAIL'}else{Start-Next}
     } catch {
         $message=$_.Exception.Message
         Add-Log ("`r`nRunner error: "+$message+"`r`n") $red
@@ -469,7 +471,7 @@ function Stop-Run {
 . (Join-Path $appDir 'Repository.ps1')
 . (Join-Path $appDir 'Targets.ps1')
 $folderButton.Add_Click({$dir=$reports;if($script:runDir){$dir=$script:runDir}; Start-Process explorer.exe -ArgumentList ('"'+$dir+'"')})
-$copyButton.Add_Click({try{[System.Windows.Forms.Clipboard]::SetText([System.IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))); $foot.Text='A riport a vágólapra került.'}catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}})
+$copyButton.Add_Click({try{$reportPath=Join-Path $runDir 'REPORT.txt'; $content=if(Test-Path -LiteralPath $reportPath -PathType Leaf){$saved=[IO.File]::ReadAllText($reportPath);if($saved){$saved}else{$reportBox.Text}}else{$reportBox.Text};[System.Windows.Forms.Clipboard]::SetText($content); $foot.Text='A riport a vágólapra került.'}catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}})
 $copyFullButton.Add_Click({try{[System.Windows.Forms.Clipboard]::SetText([System.IO.File]::ReadAllText((Join-Path $runDir 'FULL-LOG.txt')));$foot.Text='A teljes napló a vágólapra került.'}catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}})
 $stopButton.Add_Click({Stop-Run})
 function Start-StudioRun {
