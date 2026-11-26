@@ -1,6 +1,6 @@
-# VIREX Test Studio 2.1.1
+# VIREX Test Studio 2.1.2
 
-[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-stable/VIREX-Test-Studio-2.1.1-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-stable)
+[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-stable/VIREX-Test-Studio-2.1.2-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-stable)
 
 Magyar nyelvű Windows-alkalmazás Rust-projektek teszteléséhez. A kezdőképernyőn a **Belobug · VIctory AMD** cél van kiválasztva. A Studio lekéri az `a-publier` ágat, külön munkapéldányban futtatja a kiválasztott Cargo-ellenőrzéseket, és a riportba írja a ténylegesen tesztelt commitot. A saját fejlesztői példányodat a **Helyi projekt megnyitása** gombbal tudod tesztelni.
 
@@ -20,6 +20,12 @@ python .\packaging\make_icons.py
 3. A teszteléshez legyen a PATH-on a Cargo és a Rust fordító. GitHub-célhoz Git is kell. A Clippy jelölőnégyzethez a használt Rust-toolchain Clippy komponense szükséges. A Belobug Windows-buildjéhez a repo által rögzített Rust-toolchain és az MSVC C++ buildeszközök szükségesek.
 4. Első Belobug-próbának elég a **Fordításellenőrzés**. Kapcsold ki a munkaterület-teszteket és a Clippyt, ha csak a buildkörnyezetet szeretnéd ellenőrizni. Kattints a **Futtatás** gombra, nézd át a cél URL-jét és az ágat, majd erősítsd meg. A függőségek és a toolchain első letöltése időt igényelhet.
 5. A **Napló** mutatja az aktív parancsot. Befejezés után a **Riport** fülön látható az összesítés. A **Riportmappa** gombbal megnyithatók a pontos parancsok, kilépési kódok és a nyers kimenetek. Az **F1** ezt a fájlt nyitja meg.
+
+## 2.1.2 – Tárhely és hardver
+
+A **Tárhely / hardver** fülön válassz helyi SSD-mappát. A Studio saját VIREX-Studio-Cache almappát hoz létre és elmenti a választást. Csak a menedzselt távoli projektek Cargo buildcache-e kerül oda, a Git checkoutok, riportok, Cargo home és TEMP a korábbi helyükön maradnak. A helyi saját projektek Cargo-beállításait nem írja felül. A régi cache nem mozdul és nem törlődik automatikusan; az alapértelmezett cache visszaválasztásával törölhető. A törlés csak a cache és target almappákra vonatkozik, külön megerősítéssel, átirányított elemek esetén megszakad. A mérés és törlés háttérben fut, közben nem indítható build vagy frissítés.
+
+Indításkor minimum 5 GiB szabad cache-hely és 1 GiB a riport, TEMP, Cargo home meghajtóin szükséges. 20 GiB alatt figyelmeztet. Ezek nem garantált buildigények. A teljes workspace mérete nagyobb lehet. A Windows számlálóiból rendszerterhelést mintavételez: CPU, RAM, legterheltebb GPU-motor és összes dedikált GPU-memória. Nem folyamatonkénti mérés, nem garantált minden driveren, a rövid terhelési csúcsokat kihagyhatja. N/A jelzi a hiányzó adatot. A riport az észlelt csúcsokat tartalmazza; nem játék FPS. 
 
 ## 2.1.1 – Windows 10 / D3D12 Agility
 
@@ -132,7 +138,7 @@ A `.github/workflows/studio-portable.yml` a `release/studio-X.Y.Z` nevű kiadás
 powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\packaging\Build.ps1
 ```
 
-3. A kimenet `artifacts\installer\VIREX-Test-Studio-2.1.1-Setup.exe`, a verziószám a `VERSION` értékét követi. A szkript kiírja a végleges fájl SHA-256 értékét. Ha a kiadó aláírja a telepítőt, a már aláírt bájtokat kell feltölteni. A telepítő stabil AppId-ja biztosítja az egymásra telepíthetőséget.
+3. A kimenet `artifacts\installer\VIREX-Test-Studio-2.1.2-Setup.exe`, a verziószám a `VERSION` értékét követi. A szkript kiírja a végleges fájl SHA-256 értékét. Ha a kiadó aláírja a telepítőt, a már aláírt bájtokat kell feltölteni. A telepítő stabil AppId-ja biztosítja az egymásra telepíthetőséget.
 4. Egy külön Windows-felhasználónál ellenőrizd a tiszta telepítést, a Start menüs indítást, a meglévő riportok elérését, majd a régebbi telepített verzióról történő frissítést és az eltávolítást.
 5. Amikor a tulajdonos kiadást kér, a **VlREX/VIREX** repó **studio-stable** címkéjű stabil GitHub Release-éhez töltsd fel a verziózott telepítőt release assetként. A kliens az ottani legmagasabb verziót ajánlja fel. A kiadás közzététele után ellenőrizd egy korábbi telepített példányon a letöltés, bezárás, telepítés és újraindítás teljes menetét.
 
