@@ -252,7 +252,7 @@ $welcome=Add-StartPanel $logTab
 function Add-Log([string]$text,[System.Drawing.Color]$color=$fg) {
     if ([string]::IsNullOrEmpty($text)) {return}
     if ($terminal.TextLength -gt 240000) { $terminal.Select(0,80000); $terminal.SelectedText='' }
-    $terminal.SelectionStart=$terminal.TextLength; $terminal.SelectionColor=$color; $terminal.AppendText($text); $terminal.ScrollToCaret()
+    $terminal.SelectionStart=$terminal.TextLength; $terminal.SelectionColor=$color; $terminal.AppendText($text); if($tabs.SelectedTab -eq $logTab){$terminal.ScrollToCaret()}
 }
 function Read-Shared([string]$path) {
     if (!(Test-Path -LiteralPath $path)) {return ''}
@@ -376,6 +376,7 @@ function Set-Idle([string]$state) {
     }
     Update-ExecutionMode
     $labState.Text="$($script:machine.AutoProfile) | $state"
+    if($script:machine.AutoMode -and !$script:closeAfterStop){$tabs.SelectedTab=$summaryTab}
     $copyButton.Enabled=$false; $copyFullButton.Enabled=$false
     try {Save-Report; $copyButton.Enabled=$true; $copyFullButton.Enabled=$true} catch {Add-Log ("`r`nREPORT ERROR: "+$_.Exception.Message+"`r`n") $red; if($reportBox.Text){$copyButton.Enabled=$true} }; Update-StorageDisplay
     Add-Log "`r`n=== $state ===`r`n" $status.ForeColor
@@ -386,8 +387,9 @@ function Start-Next {
     if($script:queue.Count -eq 0){Set-Idle 'PASS';return}
     $script:exitSeenAt=$null; $script:stopAt=$null
     $s=$script:queue.Dequeue(); $num=$script:steps.Count+1; $s.Out=Join-Path $runDir ('{0:D2}-stdout.log' -f $num); $s.Err=Join-Path $runDir ('{0:D2}-stderr.log' -f $num); $s.OutBytes=0; $s.ErrBytes=0; $s.Start=[DateTime]::UtcNow; $s.Command=$s.Exe+' '+$s.Args; $s.Status='RUNNING'; $s.Exit=$null; $s.Error=''; $s.Seconds=0; $script:active=$s; $script:steps.Add($s); $progressText.Text="$num / $($progress.Maximum)"; Add-Log "`r`n[$num] $($s.Name)`r`n> $($s.Command)`r`n" $cyan
-    if($script:machine.AutoMode){$labState.Text='L'+(Get-StepLevel $s)+' | '+$s.Name; $status.Text='AUTO L'+(Get-StepLevel $s)}
+    if($script:machine.AutoMode){$labState.Text='L'+(Get-StepLevel $s)+' | '+$s.Name; $status.Text='AUTO L'+(Get-StepLevel $s); Update-LabProgress (Get-StepLevel $s)}
     try {
+        if($script:machine.AutoMode){$null=Get-StorageInfo $script:machine.TargetDirectory}
         # Child processes inherit only this process's selected WARP setting.
         $script:proc=[VirexChild]::Start($s.Exe,$s.Args,$workDir,$s.Out,$s.Err)
     } catch { $s.Status='RUNNER_ERROR'; $s.Exit=$null; $s.Error=$_.Exception.Message; $s.Seconds=0; Add-Log ($s.Error+"`r`n") $red; Set-Idle 'RUNNER_ERROR' }
