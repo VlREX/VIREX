@@ -174,6 +174,13 @@ $ckBench=New-Option $sidebar 'Benchmark  ·  release' $true
 $ckFull=New-Option $sidebar 'Teljes crate-teszt' $false
 $ckWarp=New-Option $sidebar 'WARP szoftveres GPU' $false
 $ckRepeat=New-Option $sidebar 'Tesztek háromszor' $true
+$ckAgility=New-Option $sidebar 'Agility SDK előkészítés' $false
+$ckDepth=New-Option $sidebar 'D3D12 depth bounds teszt' $false
+$script:windowsBuild=0
+try { $script:windowsBuild=[int](Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name CurrentBuildNumber) } catch {}
+$osHint=if ($windowsBuild -ge 10240 -and $windowsBuild -lt 22000) {'Windows 10: Agility SDK ajánlott, ha a revízió támogatja.'} elseif ($windowsBuild -ge 22000) {'Windows 11: Agility SDK opcionális.'} else {'Windows build nem azonosítható.'}
+$runtimeHint=New-Caption $sidebar $osHint 8 $inkMuted
+$runtimeHint.MaximumSize=New-Object Drawing.Size(240,0)
 $actions=New-Stack $sidebar 'LeftToRight' $false
 $actions.AutoSize=$true
 $actions.Margin=New-Object Windows.Forms.Padding(0,12,0,0)
@@ -245,3 +252,5 @@ $tip=New-Object Windows.Forms.ToolTip
 $tip.SetToolTip($updateButton,'Stabil Windows-kiadás keresése a VlREX/VIREX repóban')
 $tip.SetToolTip($ckClippy,'A Clippy figyelmeztetései is hibának számítanak.')
 $tip.SetToolTip($ckRepeat,'A kiválasztott Rust-teszteket ismétli meg. A benchmark egyszer fut.')
+$tip.SetToolTip($ckAgility,'Külön Cargo-cache, a kiválasztott repó saját cargo xtask agility parancsa. Hálózati letöltés lehetséges.')
+$tip.SetToolTip($ckDepth,'A victory-gpu depth_bounds_pipeline_loads_and_filters_draws tesztet futtatja.')
