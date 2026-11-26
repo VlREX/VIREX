@@ -25,7 +25,7 @@ $driver.Add_Tick({
         if ([DateTime]::UtcNow -gt $deadline) { throw 'Desktop test timeout.' }
         if ($script:phase -eq 0) {
             if (!$form.Visible) { return }
-            if ($combo.Items.Count -ne 20 -or $tabs.TabPages.Count -ne 4) { throw 'Missing target or workspace tab.' }
+            if ($combo.Items.Count -ne 21 -or $tabs.TabPages.Count -ne 5) { throw 'Missing target or workspace tab.' }
             if (!$updateButton.Enabled -or $ckBench.Enabled -or $combo.SelectedItem.Mode -ne 'belobug') { throw 'Startup controls unavailable.' }
             if ($PreviewPath) {
                 $bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height)
@@ -42,6 +42,20 @@ $driver.Add_Tick({
             if ([Windows.Forms.Clipboard]::GetText() -ne $prompt) { throw 'GPT prompt clipboard mismatch.' }
             $script:reviewEvidence.Clear()
 
+            $tabs.SelectedTab=$prTab
+            $prAddress.Text='https://github.com/Belobug/VIctory-Belobug-AMD/pull/7'
+            $prSelect.PerformClick()
+            if ($combo.SelectedItem.Mode -ne 'revision' -or $revisionTarget.Branch -cne 'refs/pull/7/head') { throw 'PR selection failed.' }
+            $branchTarget=ConvertTo-RevisionTarget 'https://github.com/Belobug/VIctory-Belobug-AMD/tree/fix/example'
+            if ($branchTarget.Branch -cne 'refs/heads/fix/example') { throw 'Branch selection failed.' }
+            $known='0123456789abcdef0123456789abcdef01234567'
+            $commitTarget=ConvertTo-RevisionTarget "https://github.com/Belobug/VIctory-Belobug-AMD/commit/$known"
+            if ($commitTarget.ExpectedSha -cne $known) { throw 'Commit pin failed.' }
+            foreach ($bad in @('https://example.org/a/b/pull/1','https://github.com/a/b/pull/0','https://github.com/a/b/tree/../x','https://github.com/a/b/tree/x --force','https://github.com/a/b/tree/x:refs/heads/main','https://github.com/a/b/commit/abcd','https://github.com/a/b/pull/1/files')) {
+                $rejected=$false
+                try { ConvertTo-RevisionTarget $bad | Out-Null } catch { $rejected=$true }
+                if (!$rejected) { throw "Accepted invalid revision URL: $bad" }
+            }
             $combo.SelectedIndex=1
             Set-LocalProject $sample
             if ($ckBench.Enabled -or $ckFull.Enabled -or $ckWarp.Enabled -or !$ckTest.Enabled) { throw 'Invalid local mode controls.' }
@@ -76,6 +90,13 @@ $driver.Add_Tick({
             & git -C $sample -c user.name=Studio -c user.email=fixture@example.invalid -c commit.gpgsign=false commit -qm fixture
             if ($LASTEXITCODE) { throw 'Git fixture commit failed.' }
             $script:testSha=(& git -C $sample rev-parse HEAD).Trim()
+            & git -C $sample -c user.name=Studio -c user.email=fixture@example.invalid -c commit.gpgsign=false commit --allow-empty -qm pr-fixture
+            if ($LASTEXITCODE) { throw 'PR fixture commit failed.' }
+            $script:prSha=(& git -C $sample rev-parse HEAD).Trim()
+            & git -C $sample update-ref refs/pull/7/head $prSha
+            if ($LASTEXITCODE) { throw 'PR ref creation failed.' }
+            & git -C $sample reset --hard $testSha
+            if ($LASTEXITCODE) { throw 'Fixture baseline reset failed.' }
             $script:queueStep=Get-Item Function:Add-Step | Select-Object -ExpandProperty ScriptBlock
             function script:Add-Step([string]$name,[string]$exe,[string]$arguments,[string]$kind='normal') {
                 if ([IO.Path]::GetFileName($exe) -eq 'git.exe' -and $arguments -match '^(clone|fetch) ') {
@@ -101,6 +122,16 @@ $driver.Add_Tick({
             if ($runState -ne 'FAIL' -or $steps[$steps.Count-1].Kind -ne 'clean' -or !(Test-Path -LiteralPath (Join-Path $workDir 'local-change.txt'))) {
                 throw 'Dirty checkout was not protected.'
             }
+            Remove-Item -LiteralPath (Join-Path $workDir 'local-change.txt')
+            $tabs.SelectedTab=$prTab
+            $prAddress.Text='https://github.com/Belobug/VIctory-Belobug-AMD/pull/7'
+            $prSelect.PerformClick()
+            $script:phase=31
+            $runButton.PerformClick()
+            if ($runState -ne 'RUNNING') { throw 'PR run did not start.' }
+        } elseif ($script:phase -eq 31 -and $script:runState -ne 'RUNNING') {
+            $report=[IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))
+            if ($runState -ne 'PASS' -or !$report.Contains($prSha) -or !$report.Contains('refs/pull/7/head') -or !$report.Contains('Source URL: https://github.com/Belobug/VIctory-Belobug-AMD/pull/7')) { throw $report }
             # Run the real background lookup through a fixed release response, with no network.
             $module=[IO.File]::ReadAllText((Join-Path $appDir 'StudioUpdate.ps1'))
             $stub="function Invoke-RestMethod { return @{ tag_name='studio-stable'; draft=0; prerelease=0; assets=@(@{ name='VIREX-Test-Studio-$studioVersion-Setup.exe'; state='uploaded' }) } }"
