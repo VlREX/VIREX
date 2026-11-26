@@ -154,6 +154,7 @@ Add-TargetChoice 'Belobug · VIctory AMD' 'belobug'
 Add-TargetChoice 'Saját Cargo-projekt…' 'local'
 Add-TargetChoice 'Másik GitHub-repó…' 'github'
 foreach ($p in $presets) { Add-TargetChoice $p.Name 'pinned' $p }
+Add-TargetChoice 'PR Manager · konkrét revízió' 'revision'
 $sidebar.Controls.Add($combo)
 $revision=New-Caption $sidebar '' 9 $inkMuted
 $revision.AutoSize=$false
