@@ -29,7 +29,7 @@ function Start-UpdateWorker([string]$action) {
 }
 
 $updateButton.Add_Click({
-    if ($script:updateWorker -or $script:runState -eq 'RUNNING' -or $script:unsafeState) { return }
+    if ($script:updateWorker -or $script:cacheWorker -or $script:runState -eq 'RUNNING' -or $script:unsafeState) { return }
     try { Start-UpdateWorker 'check' } catch { $foot.Text = $_.Exception.GetBaseException().Message }
 })
 $updateTimer.Add_Tick({
