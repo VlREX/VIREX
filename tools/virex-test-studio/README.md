@@ -1,6 +1,6 @@
-# VIREX Test Studio 2.1.0
+# VIREX Test Studio 2.1.1
 
-[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-stable/VIREX-Test-Studio-2.1.0-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-stable)
+[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-stable/VIREX-Test-Studio-2.1.1-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-stable)
 
 Magyar nyelvű Windows-alkalmazás Rust-projektek teszteléséhez. A kezdőképernyőn a **Belobug · VIctory AMD** cél van kiválasztva. A Studio lekéri az `a-publier` ágat, külön munkapéldányban futtatja a kiválasztott Cargo-ellenőrzéseket, és a riportba írja a ténylegesen tesztelt commitot. A saját fejlesztői példányodat a **Helyi projekt megnyitása** gombbal tudod tesztelni.
 
@@ -20,6 +20,12 @@ python .\packaging\make_icons.py
 3. A teszteléshez legyen a PATH-on a Cargo és a Rust fordító. GitHub-célhoz Git is kell. A Clippy jelölőnégyzethez a használt Rust-toolchain Clippy komponense szükséges. A Belobug Windows-buildjéhez a repo által rögzített Rust-toolchain és az MSVC C++ buildeszközök szükségesek.
 4. Első Belobug-próbának elég a **Fordításellenőrzés**. Kapcsold ki a munkaterület-teszteket és a Clippyt, ha csak a buildkörnyezetet szeretnéd ellenőrizni. Kattints a **Futtatás** gombra, nézd át a cél URL-jét és az ágat, majd erősítsd meg. A függőségek és a toolchain első letöltése időt igényelhet.
 5. A **Napló** mutatja az aktív parancsot. Befejezés után a **Riport** fülön látható az összesítés. A **Riportmappa** gombbal megnyithatók a pontos parancsok, kilépési kódok és a nyers kimenetek. Az **F1** ezt a fájlt nyitja meg.
+
+## 2.1.1 – Windows 10 / D3D12 Agility
+
+A Windows buildszámot a Studio felismeri, de nem telepít semmit automatikusan. A Belobug #360 PR (vagy a megfelelő pontos commit) kiválasztása után jelöld be az **Agility SDK előkészítés** és **D3D12 depth bounds teszt** opciókat. Az Agility csak jóváhagyással, a kiválasztott forrás saját `cargo xtask agility` parancsával fut. Az upstream parancs a Microsoft NuGet csomagját tölti le és ellenőrzi annak SHA-512 értékét. A Studio külön, -agility végű Cargo-cache-t használ; nem módosít Windows-rendszerfájlokat. Az eredeti baseline cache megmarad. A revíziónak tartalmaznia kell a szükséges Agility forrásfájlokat. A Studio a parancs kilépési kódját és a két staging DLL meglétét ellenőrzi; ez önmagában nem bizonyítja a tényleges GPU runtime betöltését.
+
+Célzott futtatáshoz kapcsold ki a munkaterület-tesztet és a Clippyt, jelöld be a háromszoros ismétlést. A pontos GPU-teszt nevére és az egyetlen sikeres tesztre külön gate van, az explicit DXC/depth-bounds kihagyás nem PASS. Egyes upstream tesztek néma korai visszatérést használnak, így az eredmény nem igazolja önmagában a GPU-útvonal futását. A riport tartalmazza a Windows buildszámot, a staging állapotát és a tesztelt SHA-t. A CI offline, inert staging fixture-t használ; a valódi SDK és fizikai GPU ellenőrzése a felhasználó gépén szükséges. A távoli forrás nem sandboxolt.
 
 ## 2.1.0 – PR Manager
 
@@ -126,7 +132,7 @@ A `.github/workflows/studio-portable.yml` a `release/studio-X.Y.Z` nevű kiadás
 powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\packaging\Build.ps1
 ```
 
-3. A kimenet `artifacts\installer\VIREX-Test-Studio-2.1.0-Setup.exe`, a verziószám a `VERSION` értékét követi. A szkript kiírja a végleges fájl SHA-256 értékét. Ha a kiadó aláírja a telepítőt, a már aláírt bájtokat kell feltölteni. A telepítő stabil AppId-ja biztosítja az egymásra telepíthetőséget.
+3. A kimenet `artifacts\installer\VIREX-Test-Studio-2.1.1-Setup.exe`, a verziószám a `VERSION` értékét követi. A szkript kiírja a végleges fájl SHA-256 értékét. Ha a kiadó aláírja a telepítőt, a már aláírt bájtokat kell feltölteni. A telepítő stabil AppId-ja biztosítja az egymásra telepíthetőséget.
 4. Egy külön Windows-felhasználónál ellenőrizd a tiszta telepítést, a Start menüs indítást, a meglévő riportok elérését, majd a régebbi telepített verzióról történő frissítést és az eltávolítást.
 5. Amikor a tulajdonos kiadást kér, a **VlREX/VIREX** repó **studio-stable** címkéjű stabil GitHub Release-éhez töltsd fel a verziózott telepítőt release assetként. A kliens az ottani legmagasabb verziót ajánlja fel. A kiadás közzététele után ellenőrizd egy korábbi telepített példányon a letöltés, bezárás, telepítés és újraindítás teljes menetét.
 
