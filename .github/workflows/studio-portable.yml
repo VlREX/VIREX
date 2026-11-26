@@ -17,10 +17,12 @@ jobs:
   build:
     if: github.repository == 'VlREX/VIREX' && startsWith(github.ref, 'refs/heads/release/studio-')
     runs-on: windows-latest
-    timeout-minutes: 12
+    timeout-minutes: 25
     outputs:
       asset: ${{ steps.package.outputs.asset }}
       sha256: ${{ steps.package.outputs.sha256 }}
+      setup: ${{ steps.package.outputs.setup }}
+      setup_sha256: ${{ steps.package.outputs.setup_sha256 }}
     defaults:
       run:
         working-directory: tools/virex-test-studio
@@ -45,16 +47,33 @@ jobs:
         run: |
           .\tests\Update.Tests.ps1
           python -m unittest -v test_ai_review
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Desktop and local Cargo integration
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -STA -File .\tests\Desktop.Tests.ps1 -WithCargo
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Ensure Inno Setup compiler is installed
+        run: |
+          $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          $standard = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (!$compiler -and !(Test-Path -LiteralPath $standard)) {
+              choco install innosetup --yes --no-progress
+              if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
       - name: Package the portable Windows release
         id: package
         run: |
           $hash = .\packaging\Build-Portable.ps1
           $asset = Split-Path -Leaf $hash.Path
-          @("asset=$asset", "sha256=$($hash.Hash.ToLowerInvariant())") | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $installer = .\packaging\Build.ps1
+          $installerName = Split-Path -Leaf $installer.Path
+          @("asset=$asset", "sha256=$($hash.Hash.ToLowerInvariant())", "setup=$installerName", "setup_sha256=$($installer.Hash.ToLowerInvariant())") | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       - uses: actions/upload-artifact@v4
         with:
           name: studio-windows
-          path: tools/virex-test-studio/artifacts/portable/*.zip
+          path: |
+            tools/virex-test-studio/artifacts/portable/*.zip
+            tools/virex-test-studio/artifacts/installer/*-Setup.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -76,19 +95,35 @@ jobs:
           GH_REPO: ${{ github.repository }}
           ASSET: ${{ needs.build.outputs.asset }}
           EXPECTED: ${{ needs.build.outputs.sha256 }}
+          SETUP: ${{ needs.build.outputs.setup }}
+          SETUP_HASH: ${{ needs.build.outputs.setup_sha256 }}
         run: |
           set -euo pipefail
-          echo "$EXPECTED  package/$ASSET" | sha256sum --check --strict
+          zip="$(find package -type f -name "$ASSET" -print -quit)"
+          setup="$(find package -type f -name "$SETUP" -print -quit)"
+          test -n "$zip" && test -n "$setup"
+          echo "$EXPECTED  $zip" | sha256sum --check --strict
+          echo "$SETUP_HASH  $setup" | sha256sum --check --strict
           tag=studio-stable
-          if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
-            if ! gh release view "$tag" --json assets --jq '.assets[].name' | grep -Fxq -- "$ASSET"; then
-              gh release upload "$tag" "package/$ASSET" --repo "$GH_REPO"
-            fi
-          else
-            gh release create "$tag" "package/$ASSET" --repo "$GH_REPO" --target "$GITHUB_SHA" --latest=false \
-              --title "VIREX Test Studio – Windows" \
-              --notes "Töltsd le a verziózott Windows ZIP-et, csomagold ki, majd indítsd el a VIREX-Test-Studio.exe fájlt. A csomag tartalmazza a forráskódot és a magyar README-t. A Belobug tesztcél az a-publier ágat használja."
+          if ! gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "$GH_REPO" --target "$GITHUB_SHA" --latest=false --title "VIREX Test Studio – Windows" --notes "Windows portable ZIP and versioned installer."
           fi
+          # Never replace existing versioned assets. Verify any pre-existing bytes first.
           mkdir verified
-          gh release download "$tag" --repo "$GH_REPO" --pattern "$ASSET" --dir verified
+          for name in "$ASSET" "$SETUP"; do
+            if gh release view "$tag" --repo "$GH_REPO" --json assets --jq '.assets[].name' | grep -Fxq -- "$name"; then
+              gh release download "$tag" --repo "$GH_REPO" --pattern "$name" --dir verified
+              if [[ "$name" == "$ASSET" ]]; then hash="$EXPECTED"; else hash="$SETUP_HASH"; fi
+              echo "$hash  verified/$name" | sha256sum --check --strict
+            fi
+          done
+          # Upload the installer last so existing clients only see it after all build gates pass.
+          for file in "$zip" "$setup"; do
+            name="$(basename "$file")"
+            if [[ ! -f "verified/$name" ]]; then
+              gh release upload "$tag" "$file" --repo "$GH_REPO"
+              gh release download "$tag" --repo "$GH_REPO" --pattern "$name" --dir verified
+            fi
+          done
           echo "$EXPECTED  verified/$ASSET" | sha256sum --check --strict
+          echo "$SETUP_HASH  verified/$SETUP" | sha256sum --check --strict
