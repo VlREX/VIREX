@@ -34,6 +34,14 @@ $driver.Add_Tick({
             $form.Size=New-Object Drawing.Size(800,590)
             $tabs.SelectedIndex=3
             if ($reviewPages.TabPages.Count -ne 2) { throw 'AI Review panels missing.' }
+            $prompt=New-ReviewPrompt 'fixture evidence'
+            if ($prompt -notmatch 'fixture evidence' -or $prompt -match 'BEGIN PEER REVIEW|Claude') { throw 'GPT-only review prompt invalid.' }
+            $script:reviewEvidence.Text='fixture evidence'
+            $gptCopy.PerformClick()
+            if ($reviewPages.SelectedIndex -ne 1) { throw 'GPT review did not open without a peer response.' }
+            if ([Windows.Forms.Clipboard]::GetText() -ne $prompt) { throw 'GPT prompt clipboard mismatch.' }
+            $script:reviewEvidence.Clear()
+
             $combo.SelectedIndex=1
             Set-LocalProject $sample
             if ($ckBench.Enabled -or $ckFull.Enabled -or $ckWarp.Enabled -or !$ckTest.Enabled) { throw 'Invalid local mode controls.' }
