@@ -25,7 +25,7 @@ $driver.Add_Tick({
         if ([DateTime]::UtcNow -gt $deadline) { throw 'Desktop test timeout.' }
         if ($script:phase -eq 0) {
             if (!$form.Visible) { return }
-            if ($combo.Items.Count -ne 21 -or $tabs.TabPages.Count -ne 6) { throw 'Missing target or workspace tab.' }
+            if ($combo.Items.Count -ne 21 -or $tabs.TabPages.Count -ne 7) { throw 'Missing target or workspace tab.' }
             if (!$updateButton.Enabled -or $ckBench.Enabled -or $combo.SelectedItem.Mode -ne 'belobug') { throw 'Startup controls unavailable.' }
             if (!$storageChoose.Enabled -or !$storageClean.Enabled -or !$storageMeasure.Enabled) { throw 'Storage controls missing.' }
             $rejected=$false; try { Assert-StorageSpace 4GB 2GB 2GB 2GB } catch { $rejected=$true }; if(!$rejected){throw 'Low disk guard failed.'}
@@ -35,6 +35,18 @@ $driver.Add_Tick({
             if (!(Test-CacheRoot $alternate) -or (Get-StudioTargetDirectory $false $true $belobugTarget $true) -ne (Join-Path $alternate ('cache\'+$belobugTarget.CacheId+'-agility'))) {throw 'Alternate cache routing failed.'}
             if ((Get-StudioTargetDirectory $true $true $belobugTarget $false) -ne $inheritedTargetDir) {throw 'Local target changed.'}
             if (!$ckAgility.Enabled -or !$ckDepth.Enabled -or $ckAgility.Checked -or $ckDepth.Checked) { throw 'Agility and depth options must be opt-in.' }
+            $profileJson='{"v":1,"target":"https://github.com/Belobug/VIctory-Belobug-AMD/pull/7","check":true,"workspace":false,"clippy":false,"repeat":3,"agility":true,"depth":true}'
+            Apply-StudioProfile $profileJson
+            if($combo.SelectedItem.Mode -ne 'revision' -or !$ckCheck.Checked -or $ckTest.Checked -or !$ckDepth.Checked -or !$ckRepeat.Checked -or !$ckAgility.Checked -or $runState -ne 'IDLE'){throw 'Manual profile application failed.'}
+            foreach($invalid in @($profileJson.Replace('"repeat":3','"repeat":2'),$profileJson.Replace('"check":true','"check":"true"'),$profileJson.Replace('"v":1','"v":1,"command":"cmd.exe"'))){
+                $rejected=$false;try{ConvertFrom-StudioProfile $invalid|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Invalid profile accepted.'}
+            }
+            $modeSwitch.Checked=$true
+            if($ckCheck.Enabled -or $profileLoad.Enabled -or !$modeSwitch.Checked){throw 'AUTO did not lock manual inputs.'}
+            $modeSwitch.Checked=$false
+            if(!$ckCheck.Enabled -or !$profileLoad.Enabled){throw 'MANUAL controls not restored.'}
+            $combo.SelectedIndex=0
+            $ckTest.Checked=$true;$ckClippy.Checked=$true;$ckAgility.Checked=$false;$ckDepth.Checked=$false
             $depthOutput="test pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws ... ok`r`ntest result: ok. 1 passed; 0 failed; 0 ignored"
             if (!(Test-DepthResult $depthOutput '') -or (Test-DepthResult $depthOutput 'no PC dxc.exe; skipped') -or (Test-DepthResult $depthOutput 'no host depth bounds support; skipped') -or (Test-DepthResult 'test result: ok. 0 passed; 0 failed; 0 ignored' '')) { throw 'Depth result gate regression.' }
             if ($PreviewPath) {
@@ -193,6 +205,30 @@ fn main() {
             if ($runState -ne 'PASS' -or !$machine.AgilityStaged -or !$env:CARGO_TARGET_DIR.EndsWith('-agility') -or @($steps | Where-Object { $_.Kind -eq 'depthtest' -and $_.Status -eq 'PASS' }).Count -ne 3 -or !$report.Contains('Agility SDK staged (files present): True')) { throw $report }
             if (!$env:CARGO_TARGET_DIR.StartsWith($alternate,[StringComparison]::OrdinalIgnoreCase)) {throw 'Actual build did not use alternate cache.'}
             if (Test-StagedAgility ($env:CARGO_TARGET_DIR.Substring(0,$env:CARGO_TARGET_DIR.Length-8))) { throw 'Agility polluted the baseline cache.' }
+            $modeSwitch.Checked=$true
+            $autoProfile.SelectedIndex=1
+            $script:phase=34
+            $runButton.PerformClick()
+            if($runState -ne 'RUNNING'){throw 'AUTO D3D12 did not start.'}
+        } elseif ($script:phase -eq 34 -and $script:runState -ne 'RUNNING') {
+            $report=[IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))
+            if($runState -ne 'PASS' -or $report -notmatch 'Execution mode: AUTO' -or @($steps|Where-Object {$_.Kind -eq 'depthtest'}).Count -ne 3 -or @($steps|Where-Object {$_.Name -eq 'L3 | Workspace tests'}).Count -ne 1){throw $report}
+            foreach($level in 0..4){if($levelResults["$level"] -ne 'PASS' -or !(Test-Path -LiteralPath (Join-Path $runDir "LEVEL-$level.txt") -PathType Leaf)){throw "Missing AUTO checkpoint $level"}}
+            $names=@($steps|ForEach-Object {$_.Name});$depthLast=[array]::IndexOf($names,'L2 | D3D12 depth bounds (3/3)');$workspaceIndex=[array]::IndexOf($names,'L3 | Workspace tests')
+            if($depthLast -lt 0 -or $workspaceIndex -le $depthLast){throw 'Wrong stage order.'}
+            $modeSwitch.Checked=$false
+            $combo.SelectedIndex=1
+            Set-LocalProject $sample
+            [IO.File]::WriteAllText((Join-Path $sample 'src/lib.rs'),'#[test] fn studio_smoke() { panic!("intentional test failure"); }')
+            function script:Confirm-StudioRun([string]$message) { return ($workDir -eq $sample) }
+            $modeSwitch.Checked=$true
+            $script:phase=35
+            $runButton.PerformClick()
+            if($runState -ne 'RUNNING'){throw 'AUTO failure fixture did not start.'}
+        } elseif ($script:phase -eq 35 -and $script:runState -ne 'RUNNING') {
+            $report=[IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))
+            if($runState -ne 'FAIL' -or $levelResults['3'] -ne 'FAIL' -or $report -notmatch 'L4 \| Strict Clippy \| NOT RUN' -or @($steps|Where-Object {$_.Name -match '^L4'}).Count){throw $report}
+            $modeSwitch.Checked=$false
             $script:phase=33
             Start-CacheOperation $false
             if(!$cacheWorker -or $runButton.Enabled -or $updateButton.Enabled){throw 'Cache worker gating failed.'}
