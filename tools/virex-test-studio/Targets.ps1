@@ -164,7 +164,9 @@ $script:monitorPeak=@{}
 function Test-PlainDirectory([string]$path) {
     $item=Get-Item -LiteralPath $path -Force -ErrorAction Stop
     while ($item) {
-        if (!$item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $false }
+        # DirectoryInfo.Parent is a .NET object, not a provider item; PSIsContainer
+        # is not guaranteed on it. Use the actual filesystem attributes.
+        if (!(($item.Attributes -band [IO.FileAttributes]::Directory)) -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $false }
         $item=$item.Parent
     }
     return $true
