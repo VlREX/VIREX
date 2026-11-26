@@ -25,8 +25,15 @@ $driver.Add_Tick({
         if ([DateTime]::UtcNow -gt $deadline) { throw 'Desktop test timeout.' }
         if ($script:phase -eq 0) {
             if (!$form.Visible) { return }
-            if ($combo.Items.Count -ne 21 -or $tabs.TabPages.Count -ne 5) { throw 'Missing target or workspace tab.' }
+            if ($combo.Items.Count -ne 21 -or $tabs.TabPages.Count -ne 6) { throw 'Missing target or workspace tab.' }
             if (!$updateButton.Enabled -or $ckBench.Enabled -or $combo.SelectedItem.Mode -ne 'belobug') { throw 'Startup controls unavailable.' }
+            if (!$storageChoose.Enabled -or !$storageClean.Enabled -or !$storageMeasure.Enabled) { throw 'Storage controls missing.' }
+            $rejected=$false; try { Assert-StorageSpace 4GB 2GB 2GB 2GB } catch { $rejected=$true }; if(!$rejected){throw 'Low disk guard failed.'}
+            Assert-StorageSpace 30GB 2GB 2GB 2GB
+            $alternate=Select-CacheRoot $fixture
+            Set-CacheRoot $alternate
+            if (!(Test-CacheRoot $alternate) -or (Get-StudioTargetDirectory $false $true $belobugTarget $true) -ne (Join-Path $alternate ('cache\'+$belobugTarget.CacheId+'-agility'))) {throw 'Alternate cache routing failed.'}
+            if ((Get-StudioTargetDirectory $true $true $belobugTarget $false) -ne $inheritedTargetDir) {throw 'Local target changed.'}
             if (!$ckAgility.Enabled -or !$ckDepth.Enabled -or $ckAgility.Checked -or $ckDepth.Checked) { throw 'Agility and depth options must be opt-in.' }
             $depthOutput="test pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws ... ok`r`ntest result: ok. 1 passed; 0 failed; 0 ignored"
             if (!(Test-DepthResult $depthOutput '') -or (Test-DepthResult $depthOutput 'no PC dxc.exe; skipped') -or (Test-DepthResult $depthOutput 'no host depth bounds support; skipped') -or (Test-DepthResult 'test result: ok. 0 passed; 0 failed; 0 ignored' '')) { throw 'Depth result gate regression.' }
@@ -184,6 +191,7 @@ fn main() {
         } elseif ($script:phase -eq 32 -and $script:runState -ne 'RUNNING') {
             $report=[IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))
             if ($runState -ne 'PASS' -or !$machine.AgilityStaged -or !$env:CARGO_TARGET_DIR.EndsWith('-agility') -or @($steps | Where-Object { $_.Kind -eq 'depthtest' -and $_.Status -eq 'PASS' }).Count -ne 3 -or !$report.Contains('Agility SDK staged (files present): True')) { throw $report }
+            if (!$env:CARGO_TARGET_DIR.StartsWith($alternate,[StringComparison]::OrdinalIgnoreCase)) {throw 'Actual build did not use alternate cache.'}
             if (Test-StagedAgility ($env:CARGO_TARGET_DIR.Substring(0,$env:CARGO_TARGET_DIR.Length-8))) { throw 'Agility polluted the baseline cache.' }
             # Run the real background lookup through a fixed release response, with no network.
             $module=[IO.File]::ReadAllText((Join-Path $appDir 'StudioUpdate.ps1'))
