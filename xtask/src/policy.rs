@@ -27,6 +27,18 @@ const ALLOWED_NAMES: &[&str] = &[
     "LICENSE-APACHE",
 ];
 
+// These first-party Studio sources use additional text formats. They still
+// pass through the same size, signature, binary and encoded-payload checks.
+const STUDIO_TEXT_SOURCES: &[&str] = &[
+    "tools/virex-test-studio/VERSION",
+    "tools/virex-test-studio/adaptive_ranges.rs.template",
+    "tools/virex-test-studio/ai_review.py",
+    "tools/virex-test-studio/test_ai_review.py",
+    "tools/virex-test-studio/packaging/Studio.iss",
+    "tools/virex-test-studio/packaging/StudioLauncher.cs",
+    "tools/virex-test-studio/packaging/make_icons.py",
+];
+
 /// Paths explicitly exempted, with a reason. Keep this empty if at all possible.
 const EXCEPTIONS: &[(&str, &str)] = &[(
     "crates/victory-formats/src/bcpack-tables.bin",
@@ -148,6 +160,7 @@ pub fn check(path: &str, content: &[u8]) -> Vec<String> {
     let name = path.rsplit('/').next().unwrap_or(path);
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
     let allowed = ALLOWED_NAMES.contains(&name)
+        || STUDIO_TEXT_SOURCES.contains(&path)
         || ext
             .as_deref()
             .is_some_and(|e| ALLOWED_EXTENSIONS.contains(&e));
@@ -196,6 +209,16 @@ mod tests {
         assert!(check("crates/x/src/lib.rs", b"fn main() {}\n").is_empty());
         assert!(check(".gitignore", b"/target/\n").is_empty());
         assert!(check(".githooks/pre-commit", b"#!/bin/sh\n").is_empty());
+    }
+
+    #[test]
+    fn studio_text_sources_do_not_exempt_binaries_or_unrelated_paths() {
+        let path = "tools/virex-test-studio/packaging/StudioLauncher.cs";
+        assert!(check(path, b"internal class StudioLauncher {}").is_empty());
+        assert!(!check(path, b"MZ\x00").is_empty());
+        assert!(!check(path, &vec![b'A'; 600]).is_empty());
+        assert!(!check("crates/other/StudioLauncher.cs", b"class X {}").is_empty());
+        assert!(!check("tools/virex-test-studio/launcher.exe", b"MZ").is_empty());
     }
 
     #[test]

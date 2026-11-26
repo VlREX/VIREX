@@ -1,5 +1,8 @@
 # VIctory
 
+The Windows test runner, Belobug integration and Hungarian developer guide
+are in [VIREX Test Studio](tools/virex-test-studio/README.md).
+
 Runs Grand Theft Auto VI (Xbox Series X|S) natively on Windows, from files
 the user supplies.
 
