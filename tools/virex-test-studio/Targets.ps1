@@ -63,6 +63,12 @@ function Test-StagedAgility([string]$targetDirectory) {
     }
     return $true
 }
+function Test-DepthResult([string]$output, [string]$errors) {
+    # --exact selects one named test; nocapture output can split its name and ok.
+    return ($output -match 'test result: ok\. 1 passed; 0 failed; 0 ignored') -and
+        ($output -match 'pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws') -and
+        (($output+"`n"+$errors) -notmatch '(?im)no host depth bounds support; skipped|no PC dxc\.exe; skipped')
+}
 function Add-WorkspaceCargoSteps([string]$cargo, [string]$directory) {
     $lock = if (Test-Path -LiteralPath (Join-Path $directory 'Cargo.lock') -PathType Leaf) { ' --locked' } else { '' }
     Add-Step 'Cargo version' $cargo '--version'
