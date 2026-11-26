@@ -1,5 +1,7 @@
 # VIREX Test Studio 2.0.0
 
+[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-stable/VIREX-Test-Studio-2.0.0-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-stable)
+
 Magyar nyelvű Windows-alkalmazás Rust-projektek teszteléséhez. A kezdőképernyőn a **Belobug · VIctory AMD** cél van kiválasztva. A Studio lekéri az `a-publier` ágat, külön munkapéldányban futtatja a kiválasztott Cargo-ellenőrzéseket, és a riportba írja a ténylegesen tesztelt commitot. A saját fejlesztői példányodat a **Helyi projekt megnyitása** gombbal tudod tesztelni.
 
 ## Indítás a forráscsomagból
@@ -90,6 +92,18 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\packaging\Build.
 ```
 
 A `-WithCargo` valódi helyi Rust-tesztet futtat szóközös, ékezetes útvonalon. Egy ideiglenes Git-repóval ellenőrzi a Belobug mód klónozását, az `a-publier` ág letöltését, a SHA rögzítését és a módosított munkafa védelmét. Csak a Git hálózati irányát helyettesíti helyi adattal. A felületi Frissítés gomb ellenőrzése szintén rögzített kiadásválasszal történik. A próbák saját ideiglenes adatkönyvtárat használnak. A `-ValidateOnly` lefordítja a .NET Framework indítót és ellenőrzi az Inno-recept összes csomagolandó forrását.
+
+### A hordozható GitHub-kiadás reprodukálása
+
+A Git-klónban generáld az ikonokat az indítási fejezet szerint. A következő parancs lefordítja a Windows-indítót, majd a telepítő receptjéből és a fejlesztői fájlok listájából elkészíti a ZIP-et.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\packaging\Build-Portable.ps1
+```
+
+A helyi kimenet az `artifacts\portable` mappába kerül. Az első nyilvános 2.0.0-s csomag Windows GitHub Actions futtatón épült. A kiadási feladat visszatöltötte a közzétett mellékletet, és összehasonlította a build során számolt SHA-256 értékkel. A publikus 2.0.0 ZIP SHA-256 értéke `7d487c8a458bf542f22f286cd9b98aeb6dc0d4d54615c833ac82873b88063199`. [Ellenőrzött kiadási futás](https://github.com/VlREX/VIREX/actions/runs/45906769307)
+
+A `.github/workflows/studio-portable.yml` a `release/studio-X.Y.Z` nevű kiadási ág push eseményére indul. A verziónak egyeznie kell a Studio `VERSION` fájljával. A Windows build után külön közzétételi feladat csatolja a verziózott ZIP-et a `studio-stable` kiadáshoz. Azonos nevű meglévő mellékletet nem ír felül. Az alkalmazáson belüli telepítős frissítéshez a következő fejezet szerinti Setup szükséges.
 
 ### Windows-telepítő készítése a következő kiadáshoz
 
