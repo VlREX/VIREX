@@ -15,6 +15,8 @@ function Update-TargetControls {
     $workspace = Test-WorkspaceTarget
     $ckFull.Enabled = !$workspace
     $ckWarp.Enabled = !$workspace
+    $ckAgility.Enabled = $workspace -and !$local
+    $ckDepth.Enabled = $workspace -and !$local
     if ($workspace) {
         $ckTest.Text = 'Munkaterület-tesztek'
         $ckBench.Enabled = $false
@@ -47,13 +49,36 @@ function Set-LocalProject([string]$directory) {
     Update-TargetControls
 }
 
+function Test-AgilitySource([string]$directory) {
+    foreach ($file in @('xtask/src/agility.rs','crates/victory-gpu/src/agility.rs','crates/victory-gpu/build.rs','.cargo/config.toml')) {
+        if (!(Test-Path -LiteralPath (Join-Path $directory $file) -PathType Leaf)) { return $false }
+    }
+    return $true
+}
+function Test-StagedAgility([string]$targetDirectory) {
+    if ([string]::IsNullOrWhiteSpace($targetDirectory)) { return $false }
+    foreach ($name in @('D3D12Core.dll','d3d12SDKLayers.dll')) {
+        $path=Join-Path $targetDirectory ('debug\D3D12\'+$name)
+        if (!(Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 0) { return $false }
+    }
+    return $true
+}
 function Add-WorkspaceCargoSteps([string]$cargo, [string]$directory) {
     $lock = if (Test-Path -LiteralPath (Join-Path $directory 'Cargo.lock') -PathType Leaf) { ' --locked' } else { '' }
     Add-Step 'Cargo version' $cargo '--version'
+    if ($script:machine.AgilityRequested) {
+        if (!(Test-AgilitySource $directory)) { throw 'A kiválasztott revízióban nincs támogatott Agility SDK integráció. Használd a Belobug #360 PR-t vagy kapcsold ki az Agility opciót.' }
+        Add-Step 'Prepare D3D12 Agility SDK' $cargo 'xtask agility' 'agility'
+    }
     if ($ckCheck.Checked) { Add-Step 'Workspace check' $cargo "check --workspace$lock" }
     if ($ckTest.Checked) {
         for ($pass=1; $pass -le $script:machine.Repeat; $pass++) {
             Add-Step "Workspace tests ($pass/$($script:machine.Repeat))" $cargo "test --workspace$lock -- --nocapture" 'tests'
+        }
+    }
+    if ($script:machine.DepthRequested) {
+        for ($pass=1; $pass -le $script:machine.Repeat; $pass++) {
+            Add-Step "D3D12 depth bounds ($pass/$($script:machine.Repeat))" $cargo "test -p victory-gpu --lib$lock pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws -- --exact --nocapture" 'depthtest'
         }
     }
     if ($ckClippy.Checked) { Add-Step 'Clippy / warnings denied' $cargo "clippy --workspace --all-targets$lock -- -D warnings" }
