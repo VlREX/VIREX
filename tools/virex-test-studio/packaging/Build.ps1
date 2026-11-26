@@ -10,7 +10,7 @@ $null = [IO.Directory]::CreateDirectory($launcherDir)
 $launcher = Join-Path $launcherDir 'VIREX-Test-Studio.exe'
 $csc = Join-Path ([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) 'csc.exe'
 if (!(Test-Path -LiteralPath $csc)) { $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
-& $csc /nologo /target:winexe /platform:anycpu /optimize+ /reference:System.Windows.Forms.dll "/win32icon:$(Join-Path $project 'assets\studio.ico')" "/out:$launcher" (Join-Path $PSScriptRoot 'StudioLauncher.cs')
+& $csc /nologo /target:winexe /platform:anycpu /optimize+ /reference:System.Windows.Forms.dll "/win32icon:$(Join-Path $project 'assets\studio.ico')" "/out:$launcher" (Join-Path $PSScriptRoot 'StudioLauncher.cs') | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'Windows launcher compilation failed.' }
 $recipe = Join-Path $PSScriptRoot 'Studio.iss'
 foreach ($line in [IO.File]::ReadLines($recipe)) {
@@ -27,7 +27,7 @@ if (!$Compiler) {
     }
 }
 if (!$Compiler) { throw 'Install Inno Setup 6 or provide -Compiler with the path to ISCC.exe.' }
-& $Compiler "/DStudioVersion=$version" $recipe
+& $Compiler "/DStudioVersion=$version" $recipe | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
 $setup = Join-Path $project "artifacts\installer\VIREX-Test-Studio-$version-Setup.exe"
 Get-FileHash -LiteralPath $setup -Algorithm SHA256
