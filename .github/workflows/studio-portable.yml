@@ -68,6 +68,19 @@ jobs:
           $installer = .\packaging\Build.ps1
           $installerName = Split-Path -Leaf $installer.Path
           @("asset=$asset", "sha256=$($hash.Hash.ToLowerInvariant())", "setup=$installerName", "setup_sha256=$($installer.Hash.ToLowerInvariant())") | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Verify clean Windows installation and uninstall
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          $setup = (Resolve-Path "artifacts\installer\VIREX-Test-Studio-$version-Setup.exe").Path
+          $destination = Join-Path $env:RUNNER_TEMP ('virex-install-' + [guid]::NewGuid())
+          $install = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/DIR="' + $destination + '"')) -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer failed: $($install.ExitCode)" }
+          if (!(Test-Path -LiteralPath (Join-Path $destination 'VIREX-Test-Studio.exe'))) { throw 'Launcher not installed.' }
+          if ((Get-Content -LiteralPath (Join-Path $destination 'VERSION') -Raw).Trim() -ne $version) { throw 'Installed version mismatch.' }
+          $uninstaller = Join-Path $destination 'unins000.exe'
+          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstall.ExitCode)" }
+          if (Test-Path -LiteralPath (Join-Path $destination 'VIREX-Test-Studio.exe')) { throw 'Uninstaller left launcher behind.' }
       - uses: actions/upload-artifact@v4
         with:
           name: studio-windows
