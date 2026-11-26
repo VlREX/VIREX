@@ -17,7 +17,7 @@ $null=[IO.Directory]::CreateDirectory((Join-Path $sample 'src'))
 $script:phase=0
 $script:passed=$false
 $script:failure=''
-$deadline=[DateTime]::UtcNow.AddSeconds(300)
+$deadline=[DateTime]::UtcNow.AddSeconds(480)
 $driver=New-Object Windows.Forms.Timer
 $driver.Interval=150
 $driver.Add_Tick({
@@ -27,6 +27,7 @@ $driver.Add_Tick({
             if (!$form.Visible) { return }
             if ($combo.Items.Count -ne 21 -or $tabs.TabPages.Count -ne 5) { throw 'Missing target or workspace tab.' }
             if (!$updateButton.Enabled -or $ckBench.Enabled -or $combo.SelectedItem.Mode -ne 'belobug') { throw 'Startup controls unavailable.' }
+            if (!$ckAgility.Enabled -or !$ckDepth.Enabled -or $ckAgility.Checked -or $ckDepth.Checked) { throw 'Agility and depth options must be opt-in.' }
             if ($PreviewPath) {
                 $bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height)
                 try { $form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height))); $bitmap.Save($PreviewPath,[Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
@@ -58,7 +59,7 @@ $driver.Add_Tick({
             }
             $combo.SelectedIndex=1
             Set-LocalProject $sample
-            if ($ckBench.Enabled -or $ckFull.Enabled -or $ckWarp.Enabled -or !$ckTest.Enabled) { throw 'Invalid local mode controls.' }
+            if ($ckBench.Enabled -or $ckFull.Enabled -or $ckWarp.Enabled -or $ckAgility.Enabled -or $ckDepth.Enabled -or !$ckTest.Enabled) { throw 'Invalid local mode controls.' }
             $combo.SelectedIndex=3
             if (!$ckBench.Enabled -or !$ckFull.Enabled) { throw 'Failed to restore pinned mode.' }
             $combo.SelectedIndex=1
@@ -90,7 +91,47 @@ $driver.Add_Tick({
             & git -C $sample -c user.name=Studio -c user.email=fixture@example.invalid -c commit.gpgsign=false commit -qm fixture
             if ($LASTEXITCODE) { throw 'Git fixture commit failed.' }
             $script:testSha=(& git -C $sample rev-parse HEAD).Trim()
-            & git -C $sample -c user.name=Studio -c user.email=fixture@example.invalid -c commit.gpgsign=false commit --allow-empty -qm pr-fixture
+            # The PR fixture uses a real tiny Cargo workspace. Its xtask stages
+            # INERT text files, not Microsoft DLLs; this tests orchestration, not D3D12.
+            foreach ($dir in @('.cargo','xtask/src','crates/victory-gpu/src')) {
+                $null=[IO.Directory]::CreateDirectory((Join-Path $sample $dir))
+            }
+            [IO.File]::WriteAllText((Join-Path $sample 'Cargo.toml'),@'
+[package]
+name = "victory-gpu"
+version = "0.1.0"
+edition = "2021"
+[workspace]
+members = ["xtask"]
+resolver = "2"
+'@)
+            [IO.File]::WriteAllText((Join-Path $sample 'src/lib.rs'),'#[cfg(test)] mod pipeline { pub mod host { pub mod tests { #[test] fn depth_bounds_pipeline_loads_and_filters_draws() { assert_eq!(2+2,4); } } } }')
+            [IO.File]::WriteAllText((Join-Path $sample '.cargo/config.toml'),'[alias]' + [Environment]::NewLine + 'xtask = "run --quiet --package xtask --"')
+            [IO.File]::WriteAllText((Join-Path $sample 'xtask/Cargo.toml'),@'
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+'@)
+            [IO.File]::WriteAllText((Join-Path $sample 'xtask/src/main.rs'),@'
+fn main() {
+    assert_eq!(std::env::args().nth(1).as_deref(), Some("agility"));
+    let target = std::path::PathBuf::from(std::env::var_os("CARGO_TARGET_DIR").unwrap());
+    let dir = target.join("debug").join("D3D12");
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in ["D3D12Core.dll", "d3d12SDKLayers.dll"] {
+        std::fs::write(dir.join(name), b"inert test fixture").unwrap();
+    }
+}
+'@)
+            foreach ($file in @('xtask/src/agility.rs','crates/victory-gpu/src/agility.rs','crates/victory-gpu/build.rs')) {
+                [IO.File]::WriteAllText((Join-Path $sample $file),'// inert fixture')
+            }
+            & cargo generate-lockfile --offline --manifest-path (Join-Path $sample 'Cargo.toml')
+            if ($LASTEXITCODE) { throw 'Fixture lock generation failed.' }
+            & git -C $sample add -- Cargo.toml Cargo.lock src/lib.rs .cargo xtask crates
+            if ($LASTEXITCODE) { throw 'PR fixture staging failed.' }
+            & git -C $sample -c user.name=Studio -c user.email=fixture@example.invalid -c commit.gpgsign=false commit -qm pr-fixture
             if ($LASTEXITCODE) { throw 'PR fixture commit failed.' }
             $script:prSha=(& git -C $sample rev-parse HEAD).Trim()
             & git -C $sample update-ref refs/pull/7/head $prSha
@@ -132,6 +173,16 @@ $driver.Add_Tick({
         } elseif ($script:phase -eq 31 -and $script:runState -ne 'RUNNING') {
             $report=[IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))
             if ($runState -ne 'PASS' -or !$report.Contains($prSha) -or !$report.Contains('refs/pull/7/head') -or !$report.Contains('Source URL: https://github.com/Belobug/VIctory-Belobug-AMD/pull/7')) { throw $report }
+            if (Test-AgilitySource $sample) { throw 'Baseline fixture unexpectedly supports agility.' }
+            $ckCheck.Checked=$false; $ckTest.Checked=$false; $ckClippy.Checked=$false
+            $ckDepth.Checked=$true; $ckAgility.Checked=$true; $ckRepeat.Checked=$true
+            $script:phase=32
+            $runButton.PerformClick()
+            if ($runState -ne 'RUNNING') { throw 'Agility test did not start.' }
+        } elseif ($script:phase -eq 32 -and $script:runState -ne 'RUNNING') {
+            $report=[IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))
+            if ($runState -ne 'PASS' -or !$machine.AgilityStaged -or !$env:CARGO_TARGET_DIR.EndsWith('-agility') -or @($steps | Where-Object { $_.Kind -eq 'depthtest' -and $_.Status -eq 'PASS' }).Count -ne 3 -or !$report.Contains('Agility SDK staged (files present): True')) { throw $report }
+            if (Test-StagedAgility ($env:CARGO_TARGET_DIR.Substring(0,$env:CARGO_TARGET_DIR.Length-8))) { throw 'Agility polluted the baseline cache.' }
             # Run the real background lookup through a fixed release response, with no network.
             $module=[IO.File]::ReadAllText((Join-Path $appDir 'StudioUpdate.ps1'))
             $stub="function Invoke-RestMethod { return @{ tag_name='studio-stable'; draft=0; prerelease=0; assets=@(@{ name='VIREX-Test-Studio-$studioVersion-Setup.exe'; state='uploaded' }) } }"
