@@ -1231,6 +1231,7 @@ fn shared_texture(
     }
     // Host textures are made on first use, in any order: the new one takes
     // the uses of every title texture of the memory, so none replaces it.
+    let own = d;
     let mut d = d;
     if let Some(k) = key {
         let at = TEXTURES_AT.lock().unwrap_or_else(|e| e.into_inner());
@@ -1243,7 +1244,19 @@ fn shared_texture(
     // shortcut: title textures of a replaced host texture keep it (placed
     // views move to the new one, `texture_at`); copies (`alias_source`)
     // bridge the two where the shapes allow.
-    let mut t = make_texture(&d, state, clear)?;
+    // Some aliases require uses the requested format cannot support on
+    // this runtime (e.g. R9G9B9E5 with an R32_UINT UAV on legacy D3D12).
+    // Keep the shared fast path when it works; otherwise make this view
+    // with its own uses and let alias_source bridge the separate textures.
+    // Do not remove any flags requested by the resource itself.
+    let mut t = make_texture(&d, state, clear).or_else(|| {
+        if d.flags == own.flags {
+            return None;
+        }
+        tracing::debug!(format = own.format, requested = own.flags, combined = d.flags,
+            "retrying a host texture without inherited alias uses");
+        make_texture(&own, state, clear)
+    })?;
     t.key = key;
     let t = std::sync::Arc::new(t);
     if let Some(k) = key {
