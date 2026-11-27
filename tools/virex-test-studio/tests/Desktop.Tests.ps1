@@ -51,6 +51,11 @@ $driver.Add_Tick({
             if($manualCrate.Text -or $manualTest.Text -or $manualSerial.Checked){throw 'v1 did not clear v2 targeting.'}
             $crashLog='error: test failed, to rerun pass '+[char]96+'-p victory-shader --lib'+[char]96+[Environment]::NewLine+'exit code: 0xc0000005, STATUS_ACCESS_VIOLATION'
             if((Get-CrashPackage '' $crashLog 101) -ne 'victory-shader' -or (Get-CrashPackage '' 'error: failed' 101)){throw 'Crash parser failed.'}
+            $defaultCrash=$crashLog.Replace('-p victory-shader --lib','--lib')
+            if((Get-CrashPackage '' $defaultCrash -1073741819) -ne '<default-lib>' -or (Get-CrashTestArgs '<default-lib>' '' ' --locked') -ne 'test --lib --locked -- --nocapture --test-threads=1'){throw 'Default library crash parser failed.'}
+            if(Get-CrashPackage '' ($crashLog+[Environment]::NewLine+$defaultCrash) -1073741819){throw 'Ambiguous crash hints accepted.'}
+            $exeLog="process didn't exit successfully: "+[char]96+'C:\cache\debug\deps\studio_fixture-12345678abcdef90.exe --nocapture'+[char]96
+            if((Get-CrashExecutable $exeLog) -ne 'studio_fixture-12345678abcdef90.exe'){throw 'Crash executable parser failed.'}
             if((Get-SerialCrashCandidate ('test a::ok ... ok'+[Environment]::NewLine+'test b::suspect ... ')) -ne 'b::suspect' -or (Get-SerialCrashCandidate 'test b::ok ... ok')){throw 'Serial candidate parser failed.'}
             $modeSwitch.Checked=$true
             if($ckCheck.Enabled -or $profileLoad.Enabled -or !$modeSwitch.Checked){throw 'AUTO did not lock manual inputs.'}
@@ -248,7 +253,7 @@ fn main() {
             if($runState -ne 'RUNNING'){throw 'Crash fixture did not start.'}
         } elseif ($script:phase -eq 36 -and $script:runState -ne 'RUNNING') {
             $report=[IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))
-            if($runState -ne 'FAIL' -or $levelResults['3'] -ne 'FAIL' -or $machine.CrashPackage -ne 'victory-gpu' -or @($steps|Where-Object {$_.Kind -eq 'diagserial'}).Count -ne 1 -or @($steps|Where-Object {$_.Kind -eq 'diagevent'}).Count -ne 1 -or !(Test-Path -LiteralPath (Join-Path $runDir 'ORIGINAL-FAIL.txt')) -or @($steps|Where-Object {$_.Name -match '^L4'}).Count){throw $report}
+            if($runState -ne 'FAIL' -or $levelResults['3'] -ne 'FAIL' -or $machine.CrashPackage -notin @('<default-lib>','studio_fixture','victory-gpu') -or @($steps|Where-Object {$_.Kind -eq 'diagserial'}).Count -ne 1 -or @($steps|Where-Object {$_.Kind -eq 'diagevent'}).Count -ne 1 -or !(Test-Path -LiteralPath (Join-Path $runDir 'ORIGINAL-FAIL.txt')) -or @($steps|Where-Object {$_.Name -match '^L4'}).Count){throw $report}
             if($machine.CrashCandidate -and @($steps|Where-Object {$_.Kind -eq 'diagexact'}).Count -ne 1){throw 'Exact candidate retry missing.'}
             $modeSwitch.Checked=$false
             $script:phase=33
