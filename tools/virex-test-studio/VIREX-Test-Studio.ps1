@@ -414,7 +414,7 @@ function Set-Idle([string]$state) {
     $labState.Text="$($script:machine.AutoProfile) | $state"
     if($script:machine.AutoMode -and !$script:closeAfterStop){$tabs.SelectedTab=$summaryTab}
     $copyButton.Enabled=$false; $copyFullButton.Enabled=$false
-    try {Save-Report; $copyButton.Enabled=$true; $copyFullButton.Enabled=$true} catch {Add-Log ("`r`nREPORT ERROR: "+$_.Exception.Message+"`r`n") $red; if($reportBox.Text){$copyButton.Enabled=$true} }; Update-StorageDisplay
+    try {Save-Report; $copyButton.Enabled=$true; $copyFullButton.Enabled=$true; if (!$script:closeAfterStop) { Publish-AutoBridgeReport (Join-Path $runDir 'REPORT.txt') $state }} catch {Add-Log ("`r`nREPORT ERROR: "+$_.Exception.Message+"`r`n") $red; if($reportBox.Text){$copyButton.Enabled=$true} }; Update-StorageDisplay
     $script:diagnosticActive=$false
     Add-Log "`r`n=== $state ===`r`n" $status.ForeColor
     if($script:closeAfterStop -and !$script:unsafeState){$script:closeAfterStop=$false;$form.Close()}
@@ -556,6 +556,7 @@ function Stop-Run {
 }
 . (Join-Path $appDir 'Repository.ps1')
 . (Join-Path $appDir 'Targets.ps1')
+. (Join-Path $appDir 'AutoBridge.ps1')
 Initialize-StudioNavigation
 $folderButton.Add_Click({$dir=$reports;if($script:runDir){$dir=$script:runDir}; Start-Process explorer.exe -ArgumentList ('"'+$dir+'"')})
 $copyButton.Add_Click({try{$reportPath=Join-Path $runDir 'REPORT.txt'; $content=if(Test-Path -LiteralPath $reportPath -PathType Leaf){$saved=[IO.File]::ReadAllText($reportPath);if($saved){$saved}else{$reportBox.Text}}else{$reportBox.Text};[System.Windows.Forms.Clipboard]::SetText($content); $foot.Text='A riport a vágólapra került.'}catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}})
@@ -692,7 +693,7 @@ $form.Add_Shown({
     $combo.Select()
 })
 $timer.Start()
-try{[void]$form.ShowDialog()}finally{$timer.Stop();$timer.Dispose();$storageTimer.Stop();$storageTimer.Dispose();if($monitorWorker){$null=$monitorWorker.BeginStop($null,$null)};$updateTimer.Stop();$updateTimer.Dispose();if ($updateWorker) { $null=$updateWorker.BeginStop($null,$null) };if($script:proc){try{$script:proc.Dispose()}catch{}};$script:mutex.ReleaseMutex();$script:mutex.Dispose();$form.Dispose()}
+try{[void]$form.ShowDialog()}finally{$timer.Stop();$timer.Dispose();$bridgeTimer.Stop();$bridgeTimer.Dispose();$storageTimer.Stop();$storageTimer.Dispose();if($monitorWorker){$null=$monitorWorker.BeginStop($null,$null)};$updateTimer.Stop();$updateTimer.Dispose();if ($updateWorker) { $null=$updateWorker.BeginStop($null,$null) };if($script:proc){try{$script:proc.Dispose()}catch{}};$script:mutex.ReleaseMutex();$script:mutex.Dispose();$form.Dispose()}
 
 if ($script:pendingSetup) {
     try { Start-VerifiedSetup $script:pendingSetup $script:updateOffer.Hash }

@@ -1,6 +1,6 @@
-# VIREX Test Studio 3.0.2 Preview – Command Center
+# VIREX Test Studio 3.1.0 Preview – Command Center
 
-[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-preview/VIREX-Test-Studio-3.0.2-Preview-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-preview)
+[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-preview/VIREX-Test-Studio-3.1.0-Preview-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-preview)
 
 Magyar nyelvű Windows-alkalmazás Rust-projektek teszteléséhez. A kezdőképernyőn a **Belobug · VIctory AMD** cél van kiválasztva. A Studio lekéri az `a-publier` ágat, külön munkapéldányban futtatja a kiválasztott Cargo-ellenőrzéseket, és a riportba írja a ténylegesen tesztelt commitot. A saját fejlesztői példányodat a **Helyi projekt megnyitása** gombbal tudod tesztelni.
 
@@ -202,3 +202,7 @@ A referencia alapján natív, dupla pufferelt Command Center, valódi tesztálla
 ## 3.0.2 – Test Lab profilkezelés
 
 A JSON mező alatti Törlés gomb csak a szöveget üríti. MANUAL módban a beillesztett profil közvetlenül a Futtatás gombbal is betölthető; az elindított első tesztfolyamat után a mező automatikusan kiürül. Hibás profil, megszakított jóváhagyás vagy indítási hiba esetén a szöveg megmarad.
+
+## 3.1.0 – AutoBridge (kísérleti)
+
+A Test Lab alján állítható be. Telepítsd a Ui.Vision FileAccess XModule-t, válts hard-drive storage módra, engedélyezd a helyi fájl URL-eket a Chrome bővítménybeállításainál. Exportáld a Ui.Vision saját ui.vision.html autorun indítóját. A Studio Makrófájl megnyitása gombjával elérhető VIREX_AutoBridge.js fájlt mentsd a Ui.Vision home/macros mappájába pontosan ezen a néven. Válaszd ki a HTML-t és a home/datasources mappát, add meg a teljes ChatGPT beszélgetés URL-jét. A cél legyen megnyitva pontosan egy Chrome-fülön. Kapcsolat tesztje után kapcsold be és mentsd az automatikus átadást. A mentett REPORT.txt helyi másolata kerül a makróhoz; nem küld üzenetet, nem ír felül szöveges piszkozatot. Az eredeti riport megmarad. A böngészőintegráció helyi ellenőrzést igényel.

@@ -37,6 +37,20 @@ $driver.Add_Tick({
             if ($combo.Items.Count -ne 21 -or $tabs.TabPages.Count -ne 8) { throw 'Missing target or workspace tab.' }
             if (!$updateButton.Enabled -or $ckBench.Enabled -or $combo.SelectedItem.Mode -ne 'belobug') { throw 'Startup controls unavailable.' }
             if (!$storageChoose.Enabled -or !$storageClean.Enabled -or !$storageMeasure.Enabled) { throw 'Storage controls missing.' }
+            if($bridgeEnabled.Checked -or $script:bridgeConfig){throw 'AutoBridge must default OFF.'}
+            $bridgeFixture=Join-Path $fixture 'bridge'
+            $bridgeFiles=Join-Path $bridgeFixture 'datasources'
+            $null=New-Item -ItemType Directory -Path $bridgeFiles -Force
+            $bridgeLauncher=Join-Path $bridgeFixture 'ui.vision.html'
+            [IO.File]::WriteAllText($bridgeLauncher,'fixture')
+            $bridgeUrl='https://chatgpt.com/g/g-abc/c/01234567-89ab-cdef-0123-456789abcdef'
+            $cfg=Get-BridgeConfig $bridgeUrl $bridgeLauncher $bridgeFiles $false
+            if(Test-BridgeTarget 'https://example.com/c/01234567-89ab-cdef-0123-456789abcdef'){throw 'Unsafe bridge target accepted.'}
+            $message='hello, "quote"'+[Environment]::NewLine+'Árvíz'
+            $job=New-BridgePayload $cfg $message '0123456789abcdef0123456789abcdef'
+            if($job.Url -notlike 'file:*' -or $job.Url -notlike '*storage=xfile*' -or $job.Url.Contains('hello')){throw 'Invalid bridge launcher.'}
+            $row=ConvertFrom-Csv -InputObject $job.Csv -Header 'payload'
+            if((ConvertFrom-Json -InputObject $row.payload) -cne $message){throw 'Bridge report encoding failed.'}
             $rejected=$false; try { Assert-StorageSpace 4GB 2GB 2GB 2GB } catch { $rejected=$true }; if(!$rejected){throw 'Low disk guard failed.'}
             Assert-StorageSpace 30GB 2GB 2GB 2GB
             $script:alternate=Select-CacheRoot $fixture

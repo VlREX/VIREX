@@ -50,6 +50,8 @@ Source: "..\Benchmark.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\Repository.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\assets\studio.png"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\Targets.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\AutoBridge.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\VIREX_AutoBridge.js"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\StudioUpdate.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\DesktopUpdate.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\AI-Review.ps1"; DestDir: "{app}"; Flags: ignoreversion
