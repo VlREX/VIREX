@@ -1,6 +1,6 @@
-# VIREX Test Studio 2.2.0
+# VIREX Test Studio 2.2.1
 
-[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-stable/VIREX-Test-Studio-2.2.0-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-stable)
+[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-stable/VIREX-Test-Studio-2.2.1-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-stable)
 
 Magyar nyelvű Windows-alkalmazás Rust-projektek teszteléséhez. A kezdőképernyőn a **Belobug · VIctory AMD** cél van kiválasztva. A Studio lekéri az `a-publier` ágat, külön munkapéldányban futtatja a kiválasztott Cargo-ellenőrzéseket, és a riportba írja a ténylegesen tesztelt commitot. A saját fejlesztői példányodat a **Helyi projekt megnyitása** gombbal tudod tesztelni.
 
@@ -20,6 +20,16 @@ python .\packaging\make_icons.py
 3. A teszteléshez legyen a PATH-on a Cargo és a Rust fordító. GitHub-célhoz Git is kell. A Clippy jelölőnégyzethez a használt Rust-toolchain Clippy komponense szükséges. A Belobug Windows-buildjéhez a repo által rögzített Rust-toolchain és az MSVC C++ buildeszközök szükségesek.
 4. Első Belobug-próbának elég a **Fordításellenőrzés**. Kapcsold ki a munkaterület-teszteket és a Clippyt, ha csak a buildkörnyezetet szeretnéd ellenőrizni. Kattints a **Futtatás** gombra, nézd át a cél URL-jét és az ágat, majd erősítsd meg. A függőségek és a toolchain első letöltése időt igényelhet.
 5. A **Napló** mutatja az aktív parancsot. Befejezés után a **Riport** fülön látható az összesítés. A **Riportmappa** gombbal megnyithatók a pontos parancsok, kilépési kódok és a nyers kimenetek. Az **F1** ezt a fájlt nyitja meg.
+
+## 2.2.1 – Crash Diagnostics
+
+AUTO L3 workspace teszt esetén a STATUS_ACCESS_VIOLATION / 0xc0000005 és egyértelmű Cargo -p package --lib újrafuttatási javaslat automatikus diagnosztikai ágat indít. Az eredeti hibás riport külön ORIGINAL-FAIL.txt fájlban marad, L4 nem fut. Egy soros crate lib újrateszt, legfeljebb egy pontos gyanús teszt újrafuttatása (ha a soros napló be nem fejezett tesztnevet mutat), majd helyi Application Error eseménynapló lekérdezés. Az eredmény mindig megőrzi az eredeti FAIL státuszt. Egy sikeres újrateszt nem igazolja a hibajavítást. A gyanús teszt nem bizonyított hibaforrás; a natív stack trace vagy dump nem automatikus. A Windows eseménynapló csak a futtatás óta keletkezett, megfelelő exe-nevű Application Error eseményeket keresi; hiányzó esemény lehetséges. Nem módosít registryt és nem gyűjt dumpot. Nincs automatikus feltöltés. A CI szintetikus kilépési kóddal ellenőrzi az ágat, nem valódi GPU-crashsel.
+
+MANUAL módban a Test Lab új crate, pontos tesztnév, egy szál mezőit is használhatod a workspace teszt opcióval. A JSON v2 a v1 mezőin felül crate, test, threads mezőket vár; threads 0 (Cargo alapértelmezett) vagy 1. A crate név és a tesztnév szigorúan ellenőrzött, nem parancssori szöveg. Példa:
+
+```json
+{"v":2,"target":"https://github.com/Belobug/VIctory-Belobug-AMD/commit/2083466bb80691d99b917d09cd9d55084338c55a","check":false,"workspace":true,"clippy":false,"repeat":1,"agility":true,"depth":false,"crate":"victory-shader","test":"","threads":1}
+```
 
 ## 2.2.0 – AUTO / MANUAL Test Lab
 
