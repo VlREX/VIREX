@@ -1,4 +1,4 @@
-// VIREX AutoBridge v3.1.5 candidate - automatic submission after verified insertion.
+// VIREX AutoBridge v3.1.6 candidate - automatic submission after verified insertion.
 const name=String(uiv.getVar('!cmd_var1')||'');
 const target=String(uiv.getVar('!cmd_var2')||'');
 const id=String(uiv.getVar('!cmd_var3')||'');
@@ -28,7 +28,14 @@ try{
   if(!verified)throw new Error('Inserted but not verified. Draft retained.');
   // User opted into automatic submission by installing this macro.
   // Revalidate destination and report immediately before one send click.
-  const submission=uiv.evaluate(helpers+'if(h.verify(target,report)!=="VERIFIED")return "DRAFT_CHANGED";const buttons=Array.from(document.querySelectorAll("button[data-testid=send-button]")).filter(b=>{const r=b.getBoundingClientRect();return r.width>0&&r.height>0&&!b.disabled&&b.getAttribute("aria-disabled")!=="true"});if(buttons.length!==1)return "SEND_BUTTON_NOT_READY";const count=document.querySelectorAll("[data-message-author-role=user]").length;buttons[0].click();return "CLICKED:"+count;');
+  let submission='SEND_BUTTON_NOT_READY';
+  for(let i=0;i<10;i++){
+    submission=uiv.evaluate(helpers+"\nif(h.verify(target,report)!==\"VERIFIED\")return \"DRAFT_CHANGED\";\nconst editor=h.editor();\nif(!editor)return \"EDITOR_NOT_UNIQUE\";\nconst visible=b=>{const r=b.getBoundingClientRect(),s=getComputedStyle(b);return r.width>0&&r.height>0&&s.display!==\"none\"&&s.visibility!==\"hidden\"&&!b.disabled&&b.getAttribute(\"aria-disabled\")!==\"true\"};\nconst labels=new Set([\"send\",\"send prompt\",\"send message\",\"küldés\",\"üzenet küldése\",\"üzenet elküldése\",\"elküldés\",\"prompt küldése\"]);\nconst isSend=b=>{\n  const id=b.id||\"\",test=b.getAttribute(\"data-testid\")||\"\";\n  if(/stop|voice|mic|dictat/i.test(id+\" \"+test))return false;\n  return id===\"composer-submit-button\"||test===\"send-button\"||test===\"composer-send-button\"||[b.getAttribute(\"aria-label\"),b.getAttribute(\"title\"),b.getAttribute(\"data-tooltip\")].some(x=>labels.has(String(x||\"\").trim().toLowerCase()));\n};\nconst form=editor.closest(\"form\");\nlet buttons=Array.from((form||document).querySelectorAll(\"button\")).filter(b=>visible(b)&&isSend(b));\nif(buttons.length===0&&form)buttons=Array.from(document.querySelectorAll(\"button\")).filter(b=>visible(b)&&isSend(b));\nif(buttons.length!==1){\n  const diagnostic=Array.from((form||document).querySelectorAll(\"button\")).filter(visible).map(b=>[b.id,b.getAttribute(\"data-testid\"),b.getAttribute(\"aria-label\"),b.getAttribute(\"title\")].filter(Boolean).join(\"/\")).filter(Boolean).slice(-15).join(\" | \");\n  return \"SEND_BUTTON_NOT_READY:\"+buttons.length+\":\"+diagnostic;\n}\nconst button=buttons[0];\nif(location.href!==target||h.verify(target,report)!==\"VERIFIED\")return \"DRAFT_CHANGED\";\nconst count=document.querySelectorAll(\"[data-message-author-role=user]\").length;\nbutton.click();\nreturn \"CLICKED:\"+count;");
+    if(/^CLICKED:\d+$/.test(submission))break;
+    uiv.log('Send attempt '+(i+1)+': '+submission);
+    if(!submission.startsWith('SEND_BUTTON_NOT_READY'))throw new Error(submission);
+    uiv.sleep('1s');
+  }
   if(!/^CLICKED:\d+$/.test(submission))throw new Error(submission);
   const count=Number(submission.split(':')[1]);
   let confirmed=false;
