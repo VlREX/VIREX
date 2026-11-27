@@ -5,15 +5,19 @@ on:
     paths:
       - 'tools/virex-test-studio/**'
       - '.github/workflows/studio-portable.yml'
+  pull_request:
+    paths:
+      - 'tools/virex-test-studio/**'
+      - '.github/workflows/studio-portable.yml'
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: virex-studio-preview
+  group: virex-studio-preview-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   build:
-    if: github.repository == 'VlREX/VIREX' && github.ref == 'refs/heads/main'
+    if: github.repository == 'VlREX/VIREX' && (github.ref == 'refs/heads/main' || github.event_name == 'pull_request')
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -81,6 +85,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:

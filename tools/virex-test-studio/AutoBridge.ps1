@@ -8,12 +8,13 @@ function Get-BridgeConfig([string]$url,[string]$html,[string]$data,[bool]$enable
     if ($data -notmatch '^[A-Za-z]:\\' -or !(Test-Path -LiteralPath $data -PathType Container) -or (Split-Path -Leaf ($data.TrimEnd('\'))) -ine 'datasources') { throw 'Válaszd ki a Ui.Vision datasources mappáját.' }
     return [pscustomobject]@{url=$url;html=$html;data=$data;enabled=$enabled}
 }
-function New-BridgePayload($cfg,[string]$report,[string]$id) {
+function New-BridgePayload($cfg,[string]$report,[string]$id,[string]$macro='VIREX_AutoBridge.js') {
+    if($macro -cnotin @('VIREX_AutoBridge.js','VIREX_PRRequest.js')){throw 'Unknown bridge macro.'}
     if ($id -cnotmatch '^[0-9a-f]{32}$' -or !$report -or $report.Length -gt 100000) { throw 'Érvénytelen vagy túl hosszú riport (max. 100 000 karakter).' }
     $name='virex-'+$id+'.csv'
     $json=ConvertTo-Json -InputObject $report -Compress
     $csv='"'+$json.Replace('"','""')+'"'+[Environment]::NewLine
-    $url=([uri]$cfg.html).AbsoluteUri+'?direct=1&closeRPA=0&closeBrowser=0&storage=xfile&macro=VIREX_AutoBridge.js&cmd_var1='+[uri]::EscapeDataString($name)+'&cmd_var2='+[uri]::EscapeDataString($cfg.url)+'&cmd_var3='+$id
+    $url=([uri]$cfg.html).AbsoluteUri+'?direct=1&closeRPA=0&closeBrowser=0&storage=xfile&macro='+[uri]::EscapeDataString($macro)+'&cmd_var1='+[uri]::EscapeDataString($name)+'&cmd_var2='+[uri]::EscapeDataString($cfg.url)+'&cmd_var3='+$id
     return @{Path=(Join-Path $cfg.data $name);Ack=(Join-Path $cfg.data ('virex-'+$id+'-ack.csv'));Csv=$csv;Url=$url;Id=$id}
 }
 $script:bridgeSettingsPath=Join-Path $root 'autobridge.json'
@@ -71,17 +72,17 @@ $bridgeEnabled.Add_CheckedChanged({
     }elseif($bridgeEnabled.Checked){$bridgeStatus.Text='Mentés szükséges az aktiváláshoz.'}
 })
 $bridgeMacro.Add_Click({Start-Process notepad.exe -ArgumentList ('"'+(Join-Path $appDir 'VIREX_AutoBridge.js')+'"')})
-function Start-BridgeTransfer($config,[string]$report){
+function Start-BridgeTransfer($config,[string]$report,[string]$macro='VIREX_AutoBridge.js'){
     if($script:bridgePending){throw 'Már folyamatban van egy átadás.'}
     $cfg=Get-BridgeConfig $config.url $config.html $config.data $config.enabled
     $pf86=[Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
     $chrome=@("$env:ProgramFiles\Google\Chrome\Application\chrome.exe","$pf86\Google\Chrome\Application\chrome.exe","$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe")|Where-Object {Test-Path -LiteralPath $_ -PathType Leaf}|Select-Object -First 1
     if(!$chrome){throw 'Chrome nem található.'}
-    $job=New-BridgePayload $cfg $report ([guid]::NewGuid().ToString('N'))
+    $job=New-BridgePayload $cfg $report ([guid]::NewGuid().ToString('N')) $macro
     [IO.File]::WriteAllText($job.Path,$job.Csv,(New-Object Text.UTF8Encoding($false)))
     try{Start-Process -FilePath $chrome -ArgumentList ('"'+$job.Url+'"') -ErrorAction Stop}
     catch{Remove-Item -LiteralPath $job.Path -Force -ErrorAction SilentlyContinue;throw}
-    $script:bridgePending=@{Job=$job;Deadline=[DateTime]::UtcNow.AddMinutes(3)}
+    $script:bridgePending=@{Job=$job;Macro=$macro;Deadline=[DateTime]::UtcNow.AddMinutes(3)}
     $bridgeStatus.Text='Átadás elindítva · visszajelzésre vár.'
 }
 $bridgeTest.Add_Click({
@@ -105,7 +106,7 @@ $bridgeTimer.Add_Tick({
         try{
             $ack=[IO.File]::ReadAllText($job.Ack).Trim().Trim('"')
             if($ack -in @(('OK:'+$job.Id),('FAIL:'+$job.Id))){
-                $bridgeStatus.Text=if($ack -eq ('OK:'+$job.Id)){'PASS · beillesztve; ellenőrizd és küldd el.'}else{'FAIL · makró megállt; a riport megmaradt.'}
+                $bridgeStatus.Text=if($ack -eq ('OK:'+$job.Id)){if($pending.Macro -eq 'VIREX_PRRequest.js'){'PASS · PR kérés elküldve.'}else{'PASS · beillesztve; ellenőrizd és küldd el.'}}else{'FAIL · makró megállt; a riport megmaradt.'}
                 Remove-Item -LiteralPath $job.Path,$job.Ack -Force -ErrorAction SilentlyContinue
                 $script:bridgePending=$null
             }

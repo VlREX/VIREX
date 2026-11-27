@@ -38,6 +38,27 @@ $driver.Add_Tick({
             if (!$updateButton.Enabled -or $ckBench.Enabled -or $combo.SelectedItem.Mode -ne 'belobug') { throw 'Startup controls unavailable.' }
             if (!$storageChoose.Enabled -or !$storageClean.Enabled -or !$storageMeasure.Enabled) { throw 'Storage controls missing.' }
             if($bridgeEnabled.Checked -or $script:bridgeConfig){throw 'AutoBridge must default OFF.'}
+            $batchProfile='{"v":3,"target":"https://github.com/VlREX/VIREX/commit/0123456789abcdef0123456789abcdef01234567","check":true,"workspace":true,"clippy":false,"repeat":1,"agility":false,"depth":false,"crate":"victory-pipeline","test":"","threads":0,"release":false,"ignored":false}'
+            $batchParsed=@(ConvertFrom-StudioBatch ('['+$batchProfile+','+$batchProfile+']'))
+            if($batchParsed.Count -ne 2 -or $batchParsed[0].Target.ExpectedSha -ne '0123456789abcdef0123456789abcdef01234567'){throw 'Batch profile parsing failed.'}
+            foreach($invalid in @('[]',$batchProfile,('['+$batchProfile.Replace('"check":true','"command":"cmd.exe"')+']'))){
+                $rejected=$false;try{ConvertFrom-StudioBatch $invalid|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Invalid batch accepted.'}
+            }
+            $request=New-OrchestratorRequest 'VlREX/VIREX' 'fixture improvement'
+            if($request -notmatch 'Draft PR' -or $request -notmatch 'virex_batch' -or $request -notmatch 'fixture improvement'){throw 'Invalid PR request template.'}
+            $rejected=$false;try{New-OrchestratorRequest 'https://example.com' 'fixture'|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Unsafe request repo accepted.'}
+            $session=@{Id='0123456789abcdef0123456789abcdef';Round=1;Origin=$batchParsed[0].Target.Origin;LastSha=''}
+            $envelope=ConvertTo-Json -Depth 8 -Compress -InputObject @{virex_batch=1;session=$session.Id;round=1;profiles=@((ConvertFrom-Json $batchProfile))}
+            if(@(ConvertFrom-AutonomousPlan $envelope $session).Count -ne 1){throw 'Autonomous plan failed.'}
+            $mailbox=Get-AutonomousMailboxUrl $session
+            if($mailbox -cne 'https://raw.githubusercontent.com/VlREX/VIREX/studio-handoff/handoff/0123456789abcdef0123456789abcdef/r1.json'){throw 'Unexpected mailbox route.'}
+            foreach($badSession in @(@{Id='../other';Round=1},@{Id=$session.Id;Round=5})){
+                $rejected=$false;try{Get-AutonomousMailboxUrl $badSession|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Unsafe mailbox route accepted.'}
+            }
+            $oldSha=$session.LastSha;$session.LastSha=$batchParsed[0].Target.ExpectedSha
+            $rejected=$false;try{ConvertFrom-AutonomousPlan $envelope $session|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Replayed commit accepted.'}
+            $session.LastSha=$oldSha
+            foreach($badEnvelope in @($envelope.Replace($session.Id,('f'*32)), $envelope.Replace('VlREX/VIREX','other/repo'))){$rejected=$false;try{ConvertFrom-AutonomousPlan $badEnvelope $session|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Unapproved autonomous plan accepted.'}}
             $bridgeFixture=Join-Path $fixture 'bridge'
             $bridgeFiles=Join-Path $bridgeFixture 'datasources'
             $null=New-Item -ItemType Directory -Path $bridgeFiles -Force
@@ -425,6 +446,21 @@ fn main() {
             Start-CacheOperation $false
             if(!$cacheWorker -or $runButton.Enabled -or $updateButton.Enabled){throw 'Cache worker gating failed.'}
         } elseif ($script:phase -eq 33 -and !$script:cacheWorker) {
+            if($storageResult.Text -notlike 'Cache mérete:*' -or !$runButton.Enabled -or !$updateButton.Enabled){throw 'Cache measurement failed before batch.'}
+            $modeSwitch.Checked=$false
+            $tabs.SelectedTab=$labTab
+            $batchProfile=ConvertTo-Json -Compress -InputObject @{v=3;target=('https://github.com/Belobug/VIctory-Belobug-AMD/commit/'+$testSha);check=$false;workspace=$true;clippy=$false;repeat=1;agility=$false;depth=$false;crate='studio_fixture';test='studio_smoke';threads=0;release=$false;ignored=$false}
+            $bad=$batchProfile.Replace('studio_fixture','missing_fixture_package')
+            $batchBox.Text='['+$batchProfile+','+$batchProfile+','+$bad+','+$batchProfile+']'
+            function script:Confirm-StudioRun([string]$message) { return $message.Contains($testSha) -and $message.Contains('missing_fixture_package') -and $message.Contains('Approve all pinned profiles') }
+            $script:phase=38
+            $batchStart.PerformClick()
+            if(!$script:batchActive){throw 'Batch did not start.'}
+        } elseif ($script:phase -eq 38 -and !$script:batchActive) {
+            $batchLog=[IO.File]::ReadAllText($script:batchReport)
+            if($batchLog -notmatch 'PROFILE 1 \| PASS' -or $batchLog -notmatch 'PROFILE 2 \| PASS' -or $batchLog -notmatch 'PROFILE 3 \| FAIL' -or $batchLog -notmatch '\[4\] NOT RUN' -or $batchLog -notmatch 'BATCH STATUS: FAIL' -or $script:batchIndex -ne 3){throw $batchLog}
+            $script:phase=39
+        } elseif ($script:phase -eq 39) {
             if($storageResult.Text -notlike 'Cache mérete:*' -or !$runButton.Enabled -or !$updateButton.Enabled){throw "Cache measurement failed: $($storageResult.Text)"}
             $module=[IO.File]::ReadAllText((Join-Path $appDir 'StudioUpdate.ps1'))
             $tag = if ($ExpectPreview) { 'studio-preview' } else { 'studio-stable' }
