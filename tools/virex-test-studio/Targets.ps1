@@ -93,8 +93,8 @@ function Add-WorkspaceCargoSteps([string]$cargo, [string]$directory) {
     if ($ckCheck.Checked) { Add-Step 'Workspace check' $cargo "check --workspace$lock" }
     if ($ckTest.Checked) {
         if($script:machine.ManualCrate){
-            $args=Get-ManualTestArgs $script:machine.ManualCrate $script:machine.ManualTest $script:machine.ManualSerial $lock
-            for($pass=1;$pass -le $script:machine.Repeat;$pass++){Add-Step "Targeted crate tests ($pass/$($script:machine.Repeat))" $cargo $args 'tests'}
+            $manualArgs=Get-ManualTestArgs $script:machine.ManualCrate $script:machine.ManualTest $script:machine.ManualSerial $lock
+            for($pass=1;$pass -le $script:machine.Repeat;$pass++){Add-Step "Targeted crate tests ($pass/$($script:machine.Repeat))" $cargo $manualArgs 'tests'}
         }else{
         for ($pass=1; $pass -le $script:machine.Repeat; $pass++) {
             Add-Step "Workspace tests ($pass/$($script:machine.Repeat))" $cargo "test --workspace$lock -- --nocapture" 'tests'
@@ -466,7 +466,7 @@ $profileBox=New-Object Windows.Forms.TextBox
 $profileBox.Multiline=$true;$profileBox.ScrollBars='Vertical';$profileBox.Width=400;$profileBox.Height=115;$profileBox.MaxLength=4096
 $profileBox.Font=Font 9 'Consolas';$labLayout.Controls.Add($profileBox)
 $profileLoad=New-Action $labLayout 'Profil betöltése' '#245B58' 185
-$profileStatus=New-Caption $labLayout 'JSON v1 · csak ismert mezők · nem futtat parancsot.' 9 $muted
+$profileStatus=New-Caption $labLayout 'JSON v1/v2 · csak ismert mezők · nem futtat parancsot.' 9 $muted
 $profileStatus.MaximumSize=New-Object Drawing.Size(400,0)
 $null=New-Caption $labLayout 'MANUAL · célzott lib teszt (opcionális)' 12 $fg $true
 $manualCrate=New-Object Windows.Forms.TextBox;$manualCrate.Width=400;$manualCrate.MaxLength=100
@@ -579,6 +579,7 @@ function Start-CrashDiagnostics($step,[string]$out,[string]$err) {
     try{
         $script:runState='FAIL'
         Save-Report
+        Copy-Item -LiteralPath (Join-Path $runDir 'REPORT.txt') -Destination (Join-Path $runDir 'ORIGINAL-FAIL.txt')
     }finally{$script:runState='RUNNING'}
     $lock=if(Test-Path -LiteralPath (Join-Path $workDir 'Cargo.lock') -PathType Leaf){' --locked'}else{''}
     Add-Step "D1 | Serial crash isolation: $package" $workspaceCargo (Get-ManualTestArgs $package '' $true $lock) 'diagserial'
