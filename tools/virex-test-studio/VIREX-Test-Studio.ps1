@@ -414,6 +414,10 @@ $timer.Add_Tick({
         if($s.Kind -eq 'runnerstop' -and !$script:stopAt -and ($now-$s.Start).TotalSeconds -ge 1){
             $script:stopAt=$now; $script:proc.RequestStop()
         }
+        if($script:diagnosticActive -and !$script:stopAt -and !$script:proc.HasExited -and ($now-$s.Start).TotalSeconds -gt $(if($s.Kind -eq 'diagevent'){30}else{300})){
+            $s.DiagnosticTimeout=$true; $script:stopAt=$now; $script:proc.RequestStop()
+            Add-Log ("Diagnostic time limit reached; stopping only the active process tree."+[Environment]::NewLine) $red
+        }
         if($script:proc.StopError){throw ('Stop failed: '+$script:proc.StopError)}
         if($script:proc.HasExited -and !$script:exitSeenAt){$script:exitSeenAt=$now}
         if(!$script:proc.TreeExited -or !$script:proc.OutputComplete){
@@ -431,7 +435,7 @@ $timer.Add_Tick({
         Update-Tail; $s.Exit=$script:proc.ExitCode; $s.Seconds=[math]::Round(([DateTime]::UtcNow-$s.Start).TotalSeconds,2); $out=Read-Shared $s.Out; $err=Read-Shared $s.Err
         if($null -eq $s.Exit){throw 'Native process exit code unavailable; result cannot be verified.'}
         if($script:proc.CaptureError){throw ('Log capture failed: '+$script:proc.CaptureError)}
-        $valid=($s.Exit -eq 0)
+        $valid=($s.Exit -eq 0 -and !$s.DiagnosticTimeout)
         if($s.Kind -eq 'runner0' -or $s.Kind -eq 'runner7'){
             $expected=if($s.Kind -eq 'runner0'){0}else{7}
             $valid=($s.Exit -eq $expected -and $out -match 'VIREX_STDOUT' -and $err -match 'VIREX_STDERR')
@@ -471,7 +475,7 @@ $timer.Add_Tick({
         $col=$green;if(!$valid){$col=$red}; Add-Log "`r`n$($s.Status) | exit $($s.Exit) | $($s.Seconds)s`r`n" $col
         if($script:cancelled){Set-Idle 'CANCELLED'}
         elseif($storageFailure){Set-Idle 'RUNNER_ERROR'}
-        elseif($script:diagnosticActive){Complete-CrashStep $s $out $err $valid; Start-Next}
+        elseif($script:diagnosticActive){if($s.DiagnosticTimeout){$s.Error='Diagnostic time limit reached.';$script:machine.CrashResult+=' | DIAGNOSTIC TIMEOUT';Set-Idle 'FAIL'}else{Complete-CrashStep $s $out $err $valid; Start-Next}}
         elseif(!$valid){if(Start-CrashDiagnostics $s $out $err){Start-Next}else{Set-Idle 'FAIL'}}
         else{if($script:machine.AutoMode -and ($script:queue.Count -eq 0 -or (Get-StepLevel $script:queue.Peek()) -ne (Get-StepLevel $s))){Write-AutoCheckpoint (Get-StepLevel $s) 'PASS'};Start-Next}
     } catch {
