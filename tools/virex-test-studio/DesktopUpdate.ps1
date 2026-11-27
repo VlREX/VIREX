@@ -8,18 +8,18 @@ function Start-UpdateWorker([string]$action) {
     $script:updateAction = $action
     $script:updateWorker = [PowerShell]::Create()
     $operation = {
-        param($module, $action, $installed, $offer, $directory)
+        param($module, $action, $installed, $offer, $directory, $preview)
         $ErrorActionPreference = 'Stop'
         . $module
-        if ($action -eq 'check') { Get-StudioUpdate ([version]$installed) }
+        if ($action -eq 'check') { Get-StudioUpdate ([version]$installed) -Preview:$preview }
         else { Receive-StudioUpdate $offer $directory }
     }
     try {
-        $null = $updateWorker.AddScript($operation.ToString()).AddArgument((Join-Path $appDir 'StudioUpdate.ps1')).AddArgument($action).AddArgument($studioVersion).AddArgument($updateOffer).AddArgument((Join-Path $root 'updates'))
+        $null = $updateWorker.AddScript($operation.ToString()).AddArgument((Join-Path $appDir 'StudioUpdate.ps1')).AddArgument($action).AddArgument($studioVersion).AddArgument($updateOffer).AddArgument((Join-Path $root 'updates')).AddArgument($script:isPreview)
         $script:updateJob = $updateWorker.BeginInvoke()
         $runButton.Enabled = $false
         $updateButton.Enabled = $false
-        $foot.Text = if ($action -eq 'check') {'Stabil kiadás keresése a GitHubon…'} else {'Telepítő letöltése és SHA-256 ellenőrzése…'}
+        $foot.Text = if ($action -eq 'check') {'Frissítés keresése a GitHubon…'} else {'Telepítő letöltése és SHA-256 ellenőrzése…'}
         $updateTimer.Start()
     } catch {
         $updateWorker.Dispose()
@@ -41,7 +41,7 @@ $updateTimer.Add_Tick({
         if ($updateAction -eq 'check') {
             switch ($result.State) {
                 'current' { $foot.Text = "Naprakész vagy. Telepített verzió: $studioVersion." }
-                'unpublished' { $foot.Text = 'A Studio stabil kiadási csatornája még nem érhető el a repóban.' }
+                'unpublished' { $foot.Text = 'Ehhez a csatornához még nincs kiadás a GitHub-repóban.' }
                 'available' {
                     $script:updateOffer = $result
                     $foot.Text = "Elérhető verzió: $($result.Version)."
@@ -78,6 +78,14 @@ function Start-VerifiedSetup([string]$path, [string]$expectedHash) {
         if ((Get-FileHash -Algorithm SHA256 -InputStream $stream).Hash -ne $expectedHash) {
             throw 'A telepítő időközben módosult. Töltsd le újból.'
         }
-        Start-Process -FilePath $path -ErrorAction Stop
+        if ($script:isPreview) {
+            $arguments = @('/DIR="' + $appDir + '"')
+            if (!(Test-Path -LiteralPath (Join-Path $appDir 'unins000.exe') -PathType Leaf)) {
+                $arguments += '/PORTABLE=1'
+            }
+            Start-Process -FilePath $path -ArgumentList $arguments -ErrorAction Stop
+        } else {
+            Start-Process -FilePath $path -ErrorAction Stop
+        }
     } finally { $stream.Dispose() }
 }

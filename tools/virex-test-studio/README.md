@@ -1,12 +1,8 @@
-# VIREX Test Studio 2.3.0 – UI preview
+# VIREX Test Studio 3.0.0 Preview
 
-[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-stable/VIREX-Test-Studio-2.2.1-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-stable)
+[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-preview/VIREX-Test-Studio-3.0.0-Preview-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-preview)
 
 Magyar nyelvű Windows-alkalmazás Rust-projektek teszteléséhez. A kezdőképernyőn a **Belobug · VIctory AMD** cél van kiválasztva. A Studio lekéri az `a-publier` ágat, külön munkapéldányban futtatja a kiválasztott Cargo-ellenőrzéseket, és a riportba írja a ténylegesen tesztelt commitot. A saját fejlesztői példányodat a **Helyi projekt megnyitása** gombbal tudod tesztelni.
-
-## 2.3.0 – Command Center UI előnézet
-
-A meglévő WinForms tesztmotorra natív, dupla pufferelt C# műszerfal épül. A valós lépésállapot, befejezett/tervezett lépések, CPU/RAM/GPU minták és cache-meghajtó szabad helye látható. A GPU-validáció szándékosan NOT VERIFIED: egy Cargo PASS önmagában nem fizikai GPU-bizonyíték. A grafikonok hiányzó/stale mintáknál N/A-t jeleznek. Az előnézet nem a teljes 3.0 automatizálás; a meglévő stabil 2.2.1 kiadás változatlan.
 
 ## Indítás a forráscsomagból
 
@@ -82,7 +78,7 @@ A PR Manager fülön illeszd be a GitHub PR-, branch- vagy teljes commit-linket,
 
 Belobug repója a [Belobug/VIctory-Belobug-AMD](https://github.com/Belobug/VIctory-Belobug-AMD). A projekt gyökerében Cargo workspace található. Ha már dolgozol benne, nyisd meg **a saját meglévő mappádat**. A helyi mód az aktuális fájljaiddal fut, a nem commitolt módosításokkal együtt. A Studio ebben a módban nem klónoz, nem kér le ágat és nem vált commitot. Kódírás, commit, push és pull request a megszokott szerkesztődből és Git-kliensedből végezhető.
 
-A távoli GitHub-mód saját klónt használ. Futtatás előtt ellenőrzi a munkafa tisztaságát és az origin címét, majd lekéri a megadott ágat, kiválasztja a `FETCH_HEAD` commitot és kiolvassa a SHA-t. Módosított klónnál a futás leáll. A tesztelendő repó kiválasztása kizárólag a tesztcélra hat. A Studio frissítéseit mindig a **VlREX/VIREX** kiadási csatornáján keresi.
+A távoli GitHub-mód saját klónt használ. Futtatás előtt ellenőrzi a munkafa tisztaságát és az origin címét, majd lekéri a megadott ágat, kiválasztja a `FETCH_HEAD` commitot és kiolvassa a SHA-t. Módosított klónnál a futás leáll. A tesztelendő repó kiválasztása kizárólag a tesztcélra hat. A stabil Studio a **VlREX/VIREX** kiadási csatornáján keres frissítést. Az előnézet a studio-preview GitHub-kiadást ellenőrzi.
 
 ## Ellenőrzések és eredmények
 
@@ -176,3 +172,25 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\packaging\Build.
 - **2.0.1 ellenőrzése**: az új release workflow az integrációs tesztet és a Setup buildet is megköveteli; az élő verzióváltást és a magas DPI-s többmonitoros próbát külön kell igazolni.
 
 Ha másik modell veszi át a munkát, először a `VERSION` fájlból és a fenti ellenőrzésekből állapítsa meg a kiinduló állapotot. A következő konkrét feladat a telepítési és élő frissítési próba. A vizsgált Belobug-revíziót mindig a legfrissebb futás `run.json` fájljából vegye át.
+
+
+### Optimalizált benchmark futtatása
+
+A Test Lab MANUAL módjában adj meg egy crate-et és pontos tesztnevet, kapcsold be a tesztelést és a Release build opciót. Az ignored opciót akkor válaszd, ha a teszten szerepel a Rust #[ignore] attribútum. Az ismétlések összesítése a riportban és a benchmark-summary.json fájlban jelenik meg.
+
+A v3 JSON-profil a v2 mezőket két logikai mezővel, release és ignored, egészíti ki. A target értéke teljes SHA-t tartalmazó GitHub commit URL. Példa a snapshot sweep benchmarkra:
+
+~~~json
+{"v":3,"target":"https://github.com/VlREX/VIctory-Belobug-AMD/commit/e4ee797c4aa5f919d06234d60fd854220674d262","check":false,"workspace":true,"clippy":false,"repeat":3,"agility":false,"depth":false,"crate":"victory-gpu","test":"shadow::snapshot_sweep_tests::benchmark_snapshot_sweep","threads":1,"release":true,"ignored":false}
+~~~
+
+
+### D3D12-validáció
+
+Ha a naplóban nincs igazolt GPU-visszaolvasás, a D3D12-ellenőrzés `NOT VERIFIED` állapotot kap. Kifejezett kihagyásnál `SKIPPED` jelenik meg. Ez az AUTO szintjelentésben és az összesített futási eredményben is látszik. A későbbi CPU-ellenőrzések ettől még lefutnak. A teszt valódi hibája továbbra is `FAIL`.
+
+Az instrumentált depth-bounds teszt az ellenőrzött képpontok visszaolvasása után írhatja ki a következő sort, ha a DXGI-adapter natív hardveres adapter: `NATIVE DEPTH READBACK PASSED: <adapter> PCI <vendor>:<device>`. A Studio csak a sikeresen befejezett, pontosan célzott teszthez fogadja el ezt a sort. A gyári, jelzés nélküli upstream teszt `NOT VERIFIED` minősítést kap.
+
+### Előnézeti telepítő
+
+A `packaging/Build.ps1 -Preview` külön előnézeti Setup.exe-t készít. A `packaging/Build-Portable.ps1 -Preview` az ugyanígy megjelölt hordozható ZIP-et hozza létre. Az előnézeti ablak címsorában megjelenik az „Előnézet” jelölés. Az előnézet a studio-preview GitHub-előkiadásból keresi a Preview-Setup.exe végű telepítőket. Ha a csatornán még nincs kiadás, az előnézet az elérhető csomagból kézzel frissíthető. Az előnézet külön telepítési mappát és eltávolítási bejegyzést használ. Az alkalmazás a meglévő Studio-adatmappát használja, így a riportok mindkét kiadásból elérhetők. A Setup.exe /PORTABLE=1 /DIR="C:\VIREX-Preview" kapcsolóval parancsikon és eltávolítási bejegyzés nélkül is kicsomagolható egy írható mappába.

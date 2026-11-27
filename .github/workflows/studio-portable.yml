@@ -1,33 +1,25 @@
-name: Publish VIREX Test Studio portable
-
+name: VIREX Test Studio 3.0 Preview
 on:
   push:
-    branches:
-      - 'release/studio-*'
-      - main
+    branches: [main]
+    paths:
+      - 'tools/virex-test-studio/**'
+      - '.github/workflows/studio-portable.yml'
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
-  group: virex-studio-portable-publish
+  group: virex-studio-preview
   cancel-in-progress: false
-
 jobs:
   build:
-    if: github.repository == 'VlREX/VIREX' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/studio-'))
+    if: github.repository == 'VlREX/VIREX' && github.ref == 'refs/heads/main'
     runs-on: windows-latest
-    timeout-minutes: 25
-    outputs:
-      asset: ${{ steps.package.outputs.asset }}
-      sha256: ${{ steps.package.outputs.sha256 }}
-      setup: ${{ steps.package.outputs.setup }}
-      setup_sha256: ${{ steps.package.outputs.setup_sha256 }}
+    timeout-minutes: 30
     defaults:
       run:
-        working-directory: tools/virex-test-studio
         shell: powershell
+        working-directory: tools/virex-test-studio
     steps:
       - uses: actions/checkout@v5
         with:
@@ -35,73 +27,62 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Check release version and generate the artwork
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate version and create artwork
         run: |
-          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
-          if ($version -notmatch '^\d+\.\d+\.\d+$' -or ($env:GITHUB_REF_NAME -cne 'main' -and $env:GITHUB_REF_NAME -cne "release/studio-$version")) {
-              throw 'The release branch must match the Studio version.'
-          }
+          if ((Get-Content VERSION -Raw).Trim() -ne '3.0.0') { throw 'Expected 3.0.0 source import' }
+          if (!(Test-Path PREVIEW)) { throw 'Preview marker is missing' }
           python -m pip install --disable-pip-version-check --only-binary=:all: Pillow==12.3.0
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python packaging/make_icons.py
-      - name: Check updater and review bridge
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Update and benchmark tests
         run: |
           .\tests\Update.Tests.ps1
+          .\tests\Benchmark.Tests.ps1
           python -m unittest -v test_ai_review
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Desktop and local Cargo integration
+      - name: Desktop and Cargo integration
         run: |
-          $preview = Join-Path $env:RUNNER_TEMP 'virex-ui-fixture.png'
-          powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -STA -File .\tests\Desktop.Tests.ps1 -WithCargo -PreviewPath $preview
+          powershell.exe -NoProfile -STA -ExecutionPolicy RemoteSigned -File .\tests\Desktop.Tests.ps1 -WithCargo -ExpectPreview -PreviewPath (Join-Path $env:RUNNER_TEMP 'virex-3-preview.png')
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: studio-ui-fixture
-          path: ${{ runner.temp }}/virex-ui-fixture.png
+          path: ${{ runner.temp }}/virex-3-preview.png
           if-no-files-found: error
-      - name: Ensure Inno Setup compiler is installed
+      - name: Ensure Inno Setup
         run: |
-          $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
           $standard = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
-          if (!$compiler -and !(Test-Path -LiteralPath $standard)) {
-              choco install innosetup --yes --no-progress
-              if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (!(Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and !(Test-Path $standard)) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
           }
-      - name: Package the portable Windows release
-        id: package
+      - name: Build preview packages
         run: |
-          $hash = .\packaging\Build-Portable.ps1
-          $asset = Split-Path -Leaf $hash.Path
-          $installer = .\packaging\Build.ps1
-          $installerName = Split-Path -Leaf $installer.Path
-          @("asset=$asset", "sha256=$($hash.Hash.ToLowerInvariant())", "setup=$installerName", "setup_sha256=$($installer.Hash.ToLowerInvariant())") | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-      - name: Verify clean Windows installation and uninstall
+          .\packaging\Build-Portable.ps1 -Preview
+          .\packaging\Build.ps1 -Preview
+      - name: Verify installation and removal
         run: |
-          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
-          $setup = (Resolve-Path "artifacts\installer\VIREX-Test-Studio-$version-Setup.exe").Path
-          $destination = Join-Path $env:RUNNER_TEMP ('virex-install-' + [guid]::NewGuid())
-          $install = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/DIR="' + $destination + '"')) -Wait -PassThru
-          if ($install.ExitCode -ne 0) { throw "Installer failed: $($install.ExitCode)" }
-          if (!(Test-Path -LiteralPath (Join-Path $destination 'VIREX-Test-Studio.exe'))) { throw 'Launcher not installed.' }
-          if ((Get-Content -LiteralPath (Join-Path $destination 'VERSION') -Raw).Trim() -ne $version) { throw 'Installed version mismatch.' }
-          $uninstaller = Join-Path $destination 'unins000.exe'
-          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait -PassThru
-          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstall.ExitCode)" }
-          if (Test-Path -LiteralPath (Join-Path $destination 'VIREX-Test-Studio.exe')) { throw 'Uninstaller left launcher behind.' }
+          $setup = (Resolve-Path 'artifacts\installer\VIREX-Test-Studio-3.0.0-Preview-Setup.exe').Path
+          $destination = Join-Path $env:RUNNER_TEMP ('virex-preview-' + [guid]::NewGuid())
+          $p=Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/DIR="'+$destination+'"')) -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'Preview installation failed' }
+          if (!(Test-Path (Join-Path $destination 'VIREX-Test-Studio.exe')) -or !(Test-Path (Join-Path $destination 'PREVIEW'))) { throw 'Preview files missing' }
+          if ((Get-Content (Join-Path $destination 'VERSION') -Raw).Trim() -ne '3.0.0') { throw 'Installed version mismatch' }
+          $p=Start-Process -FilePath (Join-Path $destination 'unins000.exe') -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait -PassThru
+          if ($p.ExitCode -ne 0 -or (Test-Path (Join-Path $destination 'VIREX-Test-Studio.exe'))) { throw 'Preview removal failed' }
       - uses: actions/upload-artifact@v4
         with:
           name: studio-windows
           path: |
-            tools/virex-test-studio/artifacts/portable/*.zip
-            tools/virex-test-studio/artifacts/installer/*-Setup.exe
+            tools/virex-test-studio/artifacts/portable/VIREX-Test-Studio-3.0.0-Preview-Windows.zip
+            tools/virex-test-studio/artifacts/installer/VIREX-Test-Studio-3.0.0-Preview-Setup.exe
           if-no-files-found: error
-          retention-days: 7
-
+          retention-days: 14
   publish:
-    if: startsWith(github.ref, 'refs/heads/release/studio-')
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     permissions:
       contents: write
     steps:
@@ -109,42 +90,63 @@ jobs:
         with:
           name: studio-windows
           path: package
-      - name: Publish and verify the Windows ZIP
-        shell: bash
+      - name: Publish verified preview only
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          ASSET: ${{ needs.build.outputs.asset }}
-          EXPECTED: ${{ needs.build.outputs.sha256 }}
-          SETUP: ${{ needs.build.outputs.setup }}
-          SETUP_HASH: ${{ needs.build.outputs.setup_sha256 }}
+        shell: bash
         run: |
           set -euo pipefail
-          zip="$(find package -type f -name "$ASSET" -print -quit)"
-          setup="$(find package -type f -name "$SETUP" -print -quit)"
-          test -n "$zip" && test -n "$setup"
-          echo "$EXPECTED  $zip" | sha256sum --check --strict
-          echo "$SETUP_HASH  $setup" | sha256sum --check --strict
-          tag=studio-stable
+          tag=studio-preview
           if ! gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
-            gh release create "$tag" --repo "$GH_REPO" --target "$GITHUB_SHA" --latest=false --title "VIREX Test Studio – Windows" --notes "Windows portable ZIP and versioned installer."
+            gh release create "$tag" --repo "$GH_REPO" --target "$GITHUB_SHA" --prerelease --latest=false --title 'VIREX Test Studio 3.0 Preview' --notes '3.0.0 Windows preview. Windows CI passed; physical GPU validation remains separate.'
           fi
-          # Never replace existing versioned assets. Verify any pre-existing bytes first.
+          test "$(gh release view "$tag" --repo "$GH_REPO" --json isPrerelease --jq '.isPrerelease')" = true
           mkdir verified
-          for name in "$ASSET" "$SETUP"; do
-            if gh release view "$tag" --repo "$GH_REPO" --json assets --jq '.assets[].name' | grep -Fxq -- "$name"; then
-              gh release download "$tag" --repo "$GH_REPO" --pattern "$name" --dir verified
-              if [[ "$name" == "$ASSET" ]]; then hash="$EXPECTED"; else hash="$SETUP_HASH"; fi
-              echo "$hash  verified/$name" | sha256sum --check --strict
-            fi
-          done
-          # Upload the installer last so existing clients only see it after all build gates pass.
-          for file in "$zip" "$setup"; do
-            name="$(basename "$file")"
-            if [[ ! -f "verified/$name" ]]; then
+          for name in VIREX-Test-Studio-3.0.0-Preview-Windows.zip VIREX-Test-Studio-3.0.0-Preview-Setup.exe; do
+            file="$(find package -type f -name "$name" -print -quit)"
+            test -n "$file"
+            if ! gh release view "$tag" --repo "$GH_REPO" --json assets --jq '.assets[].name' | grep -Fxq "$name"; then
               gh release upload "$tag" "$file" --repo "$GH_REPO"
-              gh release download "$tag" --repo "$GH_REPO" --pattern "$name" --dir verified
             fi
+            gh release download "$tag" --repo "$GH_REPO" --pattern "$name" --dir verified
+            cmp "$file" "verified/$name"
+            sha256sum "$file"
           done
-          echo "$EXPECTED  verified/$ASSET" | sha256sum --check --strict
-          echo "$SETUP_HASH  verified/$SETUP" | sha256sum --check --strict
+  cleanup-old-studio-branches:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+      - name: Remove only unchanged obsolete Studio branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          while read -r branch expected; do
+            ref="refs/heads/$branch"
+            actual="$(git ls-remote --heads origin "$ref" | cut -f1)"
+            if [[ -z "$actual" ]]; then continue; fi
+            if [[ "$actual" != "$expected" ]]; then
+              echo "Preserving $branch: changed since audit"
+              continue
+            fi
+            git push --force-with-lease="$ref:$expected" origin ":$ref"
+          done <<'OLD_REFS'
+          release/studio-2.0.0 73e02e975e2b9666b533ff9bbbdeef4b4bb3215f
+          release/studio-2.0.1 bccc616c73a7bb03260be279e7f2e294fe211079
+          release/studio-2.1.0 e8756d761207f1be8325de4b7e8f35606704f155
+          release/studio-2.1.1 2af75bd8c84a87167402aede19fe2f3b1aed4159
+          release/studio-2.1.2 0b3a8f0eea7cf6a6f72daf1bfa1a39bcee61efca
+          release/studio-2.2.0 b73963a9489cf970ebb4270f941bd57b560c3f6a
+          release/studio-2.2.1 8ee57d712962784a64adc1bed2988d8bccf2791d
+          studio/agility-2.1.1 2af75bd8c84a87167402aede19fe2f3b1aed4159
+          studio/automation-2.2.0 b73963a9489cf970ebb4270f941bd57b560c3f6a
+          studio/crash-2.2.1 4a741c3001b51b52aabb69859f1fc8706b30db63
+          studio/gpt-only-2.0.1 bccc616c73a7bb03260be279e7f2e294fe211079
+          studio/pr-manager-2.1.0 e8756d761207f1be8325de4b7e8f35606704f155
+          studio/storage-2.1.2 e5583e5887f22a641c2c6fd40e19ede9e5c69e1b
+          OLD_REFS

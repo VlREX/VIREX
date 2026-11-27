@@ -64,12 +64,54 @@ function Test-StagedAgility([string]$targetDirectory) {
     }
     return $true
 }
-function Test-DepthResult([string]$output, [string]$errors) {
-    # --exact selects one named test; nocapture output can split its name and ok.
-    return ($output -match 'test result: ok\. 1 passed; 0 failed; 0 ignored') -and
-        ($output -match 'pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws') -and
-        (($output+"`n"+$errors) -notmatch '(?im)no host depth bounds support; skipped|no PC dxc\.exe; skipped')
+$script:depthTestName = 'pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws'
+
+function Get-DepthValidation([string]$output, [string]$errors) {
+    $result = @{ Completed = $false; GpuExecution = 'NOT VERIFIED'; Evidence = ''; SkipReason = '' }
+    $testName = [regex]::Escape($script:depthTestName)
+    $testLine = "(?m)^test $testName \.\.\. "
+    if ($output -notmatch $testLine) { return $result }
+
+    if ($output -match ($testLine + 'ignored(?:[,\r\n]|$)') -and
+        $output -match '(?m)^test result: ok\. 0 passed; 0 failed; 1 ignored(?:;|\r?$)') {
+        $result.Completed = $true
+        $result.GpuExecution = 'SKIPPED'
+        $result.SkipReason = 'Rust marked the targeted depth bounds test as ignored.'
+        return $result
+    }
+    if ($output -notmatch '(?m)^test result: ok\. 1 passed; 0 failed; 0 ignored(?:;|\r?$)') { return $result }
+    $result.Completed = $true
+
+    $log = $output + [Environment]::NewLine + $errors
+    if ($log -match '(?i)no host depth bounds support; skipped|no PC dxc\.exe; skipped|no host D3D12 device; command lists will not run') {
+        $result.GpuExecution = 'SKIPPED'
+        $result.SkipReason = $Matches[0]
+        return $result
+    }
+
+    # The instrumented test emits this line after checking all depth readbacks
+    # and resolving the D3D12 device to a non-software DXGI adapter.
+    $marker = "(?m)^(?:test $testName \.\.\. )?(?<evidence>NATIVE DEPTH READBACK PASSED: (?<adapter>[^\r\n]+?) PCI (?<id>[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}))[ \t]*\r?$"
+    $evidence = [regex]::Matches($log, $marker)
+    if ($evidence.Count -eq 1 -and $evidence[0].Groups['id'].Value -ne '1414:008c' -and
+        $evidence[0].Groups['adapter'].Value -notmatch '(?i)\bWARP\b|Basic Render Driver|software adapter') {
+        $result.GpuExecution = 'VERIFIED'
+        $result.Evidence = $evidence[0].Groups['evidence'].Value
+    }
+    return $result
 }
+
+function Get-CompletedValidationStatus($entries) {
+    $hasSkip = $false
+    foreach ($entry in $entries) {
+        if ($entry.Kind -ne 'depthtest') { continue }
+        if ($entry.GpuExecution -eq 'SKIPPED') { $hasSkip = $true }
+        elseif ($entry.GpuExecution -ne 'VERIFIED') { return 'NOT VERIFIED' }
+    }
+    if ($hasSkip) { return 'SKIPPED' }
+    return 'PASS'
+}
+
 function Add-WorkspaceCargoSteps([string]$cargo, [string]$directory) {
     $lock = if (Test-Path -LiteralPath (Join-Path $directory 'Cargo.lock') -PathType Leaf) { ' --locked' } else { '' }
     Add-Step 'Cargo version' $cargo '--version'
@@ -80,7 +122,7 @@ function Add-WorkspaceCargoSteps([string]$cargo, [string]$directory) {
         }
         Add-Step 'L1 | Workspace check' $cargo "check --workspace$lock"
         if ($script:machine.DepthRequested) {
-            for($pass=1;$pass -le 3;$pass++){ Add-Step "L2 | D3D12 depth bounds ($pass/3)" $cargo "test -p victory-gpu --lib$lock pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws -- --exact --nocapture" 'depthtest' }
+            for($pass=1;$pass -le 3;$pass++){ Add-Step "L2 | D3D12 depth bounds ($pass/3)" $cargo "test -p victory-gpu --lib$lock $script:depthTestName -- --exact --nocapture" 'depthtest' }
         }
         Add-Step 'L3 | Workspace tests' $cargo "test --workspace$lock -- --nocapture" 'tests'
         Add-Step 'L4 | Clippy / warnings denied' $cargo "clippy --workspace --all-targets$lock -- -D warnings"
@@ -93,8 +135,9 @@ function Add-WorkspaceCargoSteps([string]$cargo, [string]$directory) {
     if ($ckCheck.Checked) { Add-Step 'Workspace check' $cargo "check --workspace$lock" }
     if ($ckTest.Checked) {
         if($script:machine.ManualCrate){
-            $manualArgs=Get-ManualTestArgs $script:machine.ManualCrate $script:machine.ManualTest $script:machine.ManualSerial $lock
-            for($pass=1;$pass -le $script:machine.Repeat;$pass++){Add-Step "Targeted crate tests ($pass/$($script:machine.Repeat))" $cargo $manualArgs 'tests'}
+            $manualArgs=Get-ManualTestArgs $script:machine.ManualCrate $script:machine.ManualTest $script:machine.ManualSerial $lock $script:machine.ManualRelease $script:machine.ManualIgnored
+            $kind = if ($script:machine.ManualDepth) { 'depthtest' } else { 'tests' }
+            for($pass=1;$pass -le $script:machine.Repeat;$pass++){Add-Step "Targeted crate tests ($pass/$($script:machine.Repeat))" $cargo $manualArgs $kind}
         }else{
         for ($pass=1; $pass -le $script:machine.Repeat; $pass++) {
             Add-Step "Workspace tests ($pass/$($script:machine.Repeat))" $cargo "test --workspace$lock -- --nocapture" 'tests'
@@ -103,7 +146,7 @@ function Add-WorkspaceCargoSteps([string]$cargo, [string]$directory) {
     }
     if ($script:machine.DepthRequested) {
         for ($pass=1; $pass -le $script:machine.Repeat; $pass++) {
-            Add-Step "D3D12 depth bounds ($pass/$($script:machine.Repeat))" $cargo "test -p victory-gpu --lib$lock pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws -- --exact --nocapture" 'depthtest'
+            Add-Step "D3D12 depth bounds ($pass/$($script:machine.Repeat))" $cargo "test -p victory-gpu --lib$lock $script:depthTestName -- --exact --nocapture" 'depthtest'
         }
     }
     if ($ckClippy.Checked) { Add-Step 'Clippy / warnings denied' $cargo "clippy --workspace --all-targets$lock -- -D warnings" }
@@ -278,7 +321,6 @@ $null=New-Caption $storageLayout 'GPU: legterheltebb motor; VRAM: dedikált mem�
 function Test-StorageBusy { return ($script:runState -eq 'RUNNING' -or $script:unsafeState -or $script:updateWorker -or $script:cacheWorker) }
 function Update-StorageDisplay {
     $storagePath.Text=$cacheRoot
-    try{$drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($cacheRoot)));$dashboard.SetStorage($drive.AvailableFreeSpace/1GB,$drive.TotalSize/1GB)}catch{$dashboard.SetStorage(-1,-1)}
     try { $storageFree.Text=('Cache: {0:N1} GiB szabad | Riport: {1:N1} GiB szabad' -f ((Get-FreeBytes $cacheRoot)/1GB),((Get-FreeBytes $root)/1GB)) }
     catch { $storageFree.Text='A cache meghajtó nem elérhető.' }
     foreach($control in @($storageChoose,$storageDefault,$storageMeasure,$storageClean)) { $control.Enabled=!(Test-StorageBusy) }
@@ -363,7 +405,6 @@ $storageTimer.Add_Tick({
         try {
             $r=@($monitorWorker.EndInvoke($monitorJob))[0]
             if ($r) {
-                $dashboard.Sample($(if($null -eq $r.CPU){-1}else{$r.CPU}),$(if($null -eq $r.RAM){-1}else{$r.RAM}),$(if($null -eq $r.GPU){-1}else{$r.GPU}),$(if($null -eq $r.VRAM){-1}else{$r.VRAM}))
                 $monitorText.Text=('CPU: {0} % | RAM: {1} %'+[Environment]::NewLine+'GPU: {2} % | VRAM: {3} GiB') -f $(if($null -eq $r.CPU){'N/A'}else{$r.CPU}),$(if($null -eq $r.RAM){'N/A'}else{$r.RAM}),$(if($null -eq $r.GPU){'N/A'}else{$r.GPU}),$(if($null -eq $r.VRAM){'N/A'}else{$r.VRAM})
                 if($runState -eq 'RUNNING'){
                     $script:monitorSamples++
@@ -373,7 +414,7 @@ $storageTimer.Add_Tick({
         } catch { $monitorText.Text='Hardvermérés nem elérhető.' }
         finally { $monitorWorker.Dispose(); $script:monitorWorker=$null }
     }
-    if (!$monitorWorker -and ($runState -eq 'RUNNING' -or $tabs.SelectedTab -eq $storageTab -or $tabs.SelectedTab -eq $overviewTab)) {
+    if (!$monitorWorker -and ($runState -eq 'RUNNING' -or $tabs.SelectedTab -eq $storageTab)) {
         $sample={
             $r=@{CPU=$null;RAM=$null;GPU=$null;VRAM=$null}
             try {$r.CPU=[math]::Round((Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -ErrorAction Stop).PercentProcessorTime,0)}catch{}
@@ -402,22 +443,27 @@ function ConvertFrom-StudioProfile([string]$json) {
     $data=ConvertFrom-Json -InputObject $json -ErrorAction Stop
     if ($data -isnot [pscustomobject]) { throw 'A tesztprofil egy JSON objektum.' }
     $keys=@('v','target','check','workspace','clippy','repeat','agility','depth')
-    if($data.v -eq 2){$keys+=@('crate','test','threads')}
+    if($data.v -in @(2,3)){$keys+=@('crate','test','threads')}
+    if($data.v -eq 3){$keys+=@('release','ignored')}
     $actual=@($data.PSObject.Properties.Name)
     if ($actual.Count -ne $keys.Count -or @($actual | Where-Object { $_ -cnotin $keys }).Count) { throw 'Ismeretlen vagy hiányzó profilmező.' }
-    if ($data.v -isnot [int] -or $data.v -notin @(1,2)) { throw 'Nem támogatott profilverzió.' }
+    if ($data.v -isnot [int] -or $data.v -notin @(1,2,3)) { throw 'Nem támogatott profilverzió.' }
     if ($data.target -isnot [string] -or $data.target.Length -gt 400) { throw 'Érvénytelen tesztcél.' }
     foreach ($key in @('check','workspace','clippy','agility','depth')) {
         if ($data.$key -isnot [bool]) { throw "A $key mező csak true vagy false lehet." }
     }
     if ($data.repeat -isnot [int] -or $data.repeat -notin @(1,3)) { throw 'Az ismétlés csak 1 vagy 3 lehet.' }
     if (!$data.check -and !$data.workspace -and !$data.clippy -and !$data.depth) { throw 'Legalább egy teszt szükséges.' }
-    if($data.v -eq 2){
+    if($data.v -eq 3 -and ($data.release -isnot [bool] -or $data.ignored -isnot [bool])) {
+        throw 'A release és ignored mező csak true vagy false lehet.'
+    }
+    if($data.v -in @(2,3)){
         if($data.crate -isnot [string] -or $data.test -isnot [string] -or $data.threads -isnot [int] -or $data.threads -notin @(0,1)){throw 'Érvénytelen crate / test / threads mező.'}
         if(!$data.workspace){throw 'A célzott crate teszthez workspace:true szükséges.'}
-        $null=Get-ManualTestArgs $data.crate $data.test ($data.threads -eq 1) ''
+        $null=Get-ManualTestArgs $data.crate $data.test ($data.threads -eq 1) '' ([bool]$data.release) ([bool]$data.ignored)
     }
     $target=ConvertTo-RevisionTarget $data.target
+    if($data.v -eq 3 -and !$target.ExpectedSha){throw 'A v3 profil teljes commit SHA-t tartalmazó GitHub URL-t igényel.'}
     return @{Target=$target;Options=$data}
 }
 function Apply-StudioProfile([string]$json) {
@@ -432,7 +478,8 @@ function Apply-StudioProfile([string]$json) {
     $ckCheck.Checked=$d.check; $ckTest.Checked=$d.workspace; $ckClippy.Checked=$d.clippy
     $ckRepeat.Checked=($d.repeat -eq 3); $ckAgility.Checked=$d.agility; $ckDepth.Checked=$d.depth
     $ckFull.Checked=$false; $ckBench.Checked=$false; $ckWarp.Checked=$false
-    $manualCrate.Text=if($d.v -eq 2){$d.crate}else{''};$manualTest.Text=if($d.v -eq 2){$d.test}else{''};$manualSerial.Checked=($d.v -eq 2 -and $d.threads -eq 1)
+    $manualCrate.Text=if($d.v -in @(2,3)){$d.crate}else{''};$manualTest.Text=if($d.v -in @(2,3)){$d.test}else{''};$manualSerial.Checked=($d.v -in @(2,3) -and $d.threads -eq 1)
+    $manualRelease.Checked=($d.v -eq 3 -and $d.release); $manualIgnored.Checked=($d.v -eq 3 -and $d.ignored)
     $profileStatus.Text='Profil betöltve. Ellenőrizd a pipákat, majd Futtatás. Semmi nem indult el.'
 }
 function Get-AutoPlan([bool]$d3d) {
@@ -468,7 +515,7 @@ $profileBox=New-Object Windows.Forms.TextBox
 $profileBox.Multiline=$true;$profileBox.ScrollBars='Vertical';$profileBox.Width=400;$profileBox.Height=115;$profileBox.MaxLength=4096
 $profileBox.Font=Font 9 'Consolas';$labLayout.Controls.Add($profileBox)
 $profileLoad=New-Action $labLayout 'Profil betöltése' '#245B58' 185
-$profileStatus=New-Caption $labLayout 'JSON v1/v2 · csak ismert mezők · nem futtat parancsot.' 9 $muted
+$profileStatus=New-Caption $labLayout 'JSON v1/v2/v3 · csak ismert mezők · nem futtat parancsot.' 9 $muted
 $profileStatus.MaximumSize=New-Object Drawing.Size(400,0)
 $null=New-Caption $labLayout 'MANUAL · célzott lib teszt (opcionális)' 12 $fg $true
 $manualCrate=New-Object Windows.Forms.TextBox;$manualCrate.Width=400;$manualCrate.MaxLength=100
@@ -477,6 +524,8 @@ $null=New-Caption $labLayout 'Crate neve (pl. victory-shader); üres = workspace
 $manualTest=New-Object Windows.Forms.TextBox;$manualTest.Width=400;$manualTest.MaxLength=300
 $labLayout.Controls.Add($manualTest)
 $null=New-Caption $labLayout 'Pontos tesztnév; üres = teljes crate lib' 9 $muted
+$manualRelease=Check $labLayout 'Release build (optimalizált)' 0 0 300 $false
+$manualIgnored=Check $labLayout 'Csak az ignored jelölésű pontos teszt' 0 0 330 $false
 $manualSerial=Check $labLayout 'Soros futtatás (1 tesztszál)' 0 0 300 $false
 $profileLoad.Add_Click({try{Apply-StudioProfile $profileBox.Text}catch{$profileStatus.Text=$_.Exception.Message}})
 function Update-LabProgress([int]$runningLevel=-1) {
@@ -495,13 +544,13 @@ function Update-ExecutionMode {
     $auto=$modeSwitch.Checked
     if ($auto -and !(Test-WorkspaceTarget)) { $modeSwitch.Checked=$false; return }
     $modeSwitch.Text=if($auto){'AUTO  |  MANUAL'}else{'MANUAL  |  AUTO'}
-    $modeSwitch.BackColor=if($auto){Color '#087669'}else{Color '#223545'}
+    $modeSwitch.BackColor=if($auto){Color '#087669'}else{Color '#355764'}
     $modeSwitch.Enabled=!$busy -and (Test-WorkspaceTarget)
     $autoProfile.Enabled=$auto -and !$busy -and !(Test-LocalTarget)
     if(Test-LocalTarget){$autoProfile.SelectedIndex=0}
     $profileBox.Enabled=!$auto -and !$busy
     $profileLoad.Enabled=$profileBox.Enabled
-    foreach($c in @($manualCrate,$manualTest,$manualSerial)){$c.Enabled=!$auto -and !$busy -and (Test-WorkspaceTarget)}
+    foreach($c in @($manualCrate,$manualTest,$manualSerial,$manualRelease,$manualIgnored)){$c.Enabled=!$auto -and !$busy -and (Test-WorkspaceTarget)}
     if($auto){foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckRepeat,$ckAgility,$ckDepth,$ckFull,$ckWarp,$ckBench)){$c.Enabled=$false}}
     $labPlan.Items.Clear()
     if($auto){Update-LabProgress}
@@ -523,10 +572,13 @@ $modeSwitch.Add_CheckedChanged({
 $autoProfile.Add_SelectedIndexChanged({if($script:runState -ne 'RUNNING'){$script:levelResults=@{}};Update-ExecutionMode})
 function Write-AutoCheckpoint([int]$level,[string]$state) {
     if (!$script:machine.AutoMode -or !$runDir) { return }
+    $entries = @($steps | Where-Object { (Get-StepLevel $_) -eq $level })
+    if ($state -eq 'PASS') { $state = Get-CompletedValidationStatus $entries }
     $lines=@("VIREX $studioVersion | AUTO LEVEL $level | $state","Target: $($runPreset.Name)","Commit: $($runPreset.Sha)","Agility staged: $($machine.AgilityStaged)")
-    foreach($entry in $steps){
-        if((Get-StepLevel $entry) -ne $level){continue}
+    foreach($entry in $entries){
         $lines+=@("[$($entry.Status)] $($entry.Name) | exit=$($entry.Exit) | $($entry.Seconds)s",$entry.Command)
+        if($entry.GpuExecution){$lines+=('GPU execution: '+$entry.GpuExecution)}
+        if($entry.GpuEvidence){$lines+=$entry.GpuEvidence}
         if($entry.Error){$lines+=$entry.Error}
         $lines+=@(((Read-Shared $entry.Out)+[Environment]::NewLine+(Read-Shared $entry.Err)) -split '\r?\n' | Where-Object {$_ -match 'test result:|error:|FAILED|skipped|Finished'} | Select-Object -Last 40)
     }
@@ -538,12 +590,15 @@ function Write-AutoCheckpoint([int]$level,[string]$state) {
 Update-ExecutionMode
 
 
-function Get-ManualTestArgs([string]$crate,[string]$test,[bool]$serial,[string]$lock) {
+function Get-ManualTestArgs([string]$crate,[string]$test,[bool]$serial,[string]$lock,[bool]$release=$false,[bool]$ignored=$false) {
     if($crate -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$'){throw 'Érvénytelen crate név.'}
     if($test -and $test -cnotmatch '^[A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)*$'){throw 'Érvénytelen pontos tesztnév.'}
     if($test.Length -gt 300){throw 'Túl hosszú tesztnév.'}
-    $arg="test -p $crate --lib$lock"
+    if($ignored -and !$test){throw 'Az ignored futtatáshoz pontos tesztnév kell.'}
+    $buildProfile=if($release){' --release'}else{''}
+    $arg="test$buildProfile -p $crate --lib$lock"
     if($test){$arg+=" $test -- --exact --nocapture"}else{$arg+=' -- --nocapture'}
+    if($ignored){$arg+=' --ignored'}
     if($serial){$arg+=' --test-threads=1'}
     return $arg
 }

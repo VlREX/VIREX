@@ -15,6 +15,13 @@ $release = @{ tag_name='studio-stable'; draft=$false; prerelease=$false; assets=
 try {
     $offer = Select-StudioUpdate $release ([version]'2.9.9')
     Assert-True ($offer.Version -eq '2.10.0') 'Numeric version comparison failed.'
+    $previewAsset = $asset.Clone()
+    $previewAsset.name = 'VIREX-Test-Studio-3.0.1-Preview-Setup.exe'
+    $previewAsset.browser_download_url = 'https://github.com/VlREX/VIREX/releases/download/studio-preview/' + $previewAsset.name
+    $previewRelease = @{ tag_name='studio-preview'; draft=$false; prerelease=$true; assets=@($asset,$previewAsset) }
+    Assert-True ((Select-StudioUpdate $previewRelease '3.0.0' -Preview).Name -eq $previewAsset.name) 'Preview update asset selection failed.'
+    Assert-Throws { Select-StudioUpdate $previewRelease '2.0.0' } 'Stable channel accepted a preview release.'
+    Assert-Throws { Select-StudioUpdate $release '2.0.0' -Preview } 'Preview channel accepted a stable release.'
     foreach ($current in @('2.10.0','3.0.0')) { Assert-True ((Select-StudioUpdate $release $current).State -eq 'current') 'Equal or older offer.' }
     foreach ($key in @('draft','prerelease')) {
         $release[$key]=$true

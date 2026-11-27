@@ -1,6 +1,6 @@
 ﻿# Run from Windows PowerShell 5.1 -STA in a fresh process.
 [CmdletBinding()]
-param([switch]$WithCargo, [string]$PreviewPath)
+param([switch]$WithCargo, [string]$PreviewPath, [switch]$ExpectPreview)
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Windows.Forms
 $projectPath=Split-Path -Parent $PSScriptRoot
@@ -8,12 +8,14 @@ $tempBase=[IO.Path]::GetTempPath()
 $fixture=Join-Path $tempBase ('virex-desktop-'+[guid]::NewGuid().ToString('N'))
 $oldAppData=$env:LOCALAPPDATA
 $oldOffline=$env:CARGO_NET_OFFLINE
+$oldDepthSkip=$env:VIREX_STUDIO_FIXTURE_DEPTH_SKIP
+$env:VIREX_STUDIO_FIXTURE_DEPTH_SKIP=$null
 $env:LOCALAPPDATA=$fixture
 $env:CARGO_NET_OFFLINE='true'
 $sample=Join-Path $fixture 'Árvíz Cargo projekt'
 $null=[IO.Directory]::CreateDirectory((Join-Path $sample 'src'))
 [IO.File]::WriteAllText((Join-Path $sample 'Cargo.toml'),"[package]$([Environment]::NewLine)name = 'studio_fixture'$([Environment]::NewLine)version = '0.1.0'$([Environment]::NewLine)edition = '2021'")
-[IO.File]::WriteAllText((Join-Path $sample 'src\lib.rs'),'#[test] fn studio_smoke() { assert_eq!(2 + 2, 4); }')
+[IO.File]::WriteAllText((Join-Path $sample 'src\lib.rs'),'#[test] fn studio_smoke() { assert_eq!(2 + 2, 4); } #[test] #[ignore] fn studio_release() { assert!(!cfg!(debug_assertions)); }')
 $script:phase=0
 $script:passed=$false
 $script:failure=''
@@ -25,6 +27,13 @@ $driver.Add_Tick({
         if ([DateTime]::UtcNow -gt $deadline) { throw 'Desktop test timeout.' }
         if ($script:phase -eq 0) {
             if (!$form.Visible) { return }
+            if ($isPreview -ne $ExpectPreview.IsPresent) { throw 'Unexpected package channel.' }
+            if ($ExpectPreview -and ($form.Text -notlike '*Előnézet*' -or $updateButton.Text -ne '&Frissítések')) {
+                throw 'Preview title or GitHub update button missing.'
+            }
+            if ($tabs.SelectedTab -ne $overviewTab -or $overviewStatus.Text -ne 'Készen áll' -or $overviewSteps.Text -ne '—') {
+                throw 'Overview does not show idle state on startup.'
+            }
             if ($combo.Items.Count -ne 21 -or $tabs.TabPages.Count -ne 8) { throw 'Missing target or workspace tab.' }
             if (!$updateButton.Enabled -or $ckBench.Enabled -or $combo.SelectedItem.Mode -ne 'belobug') { throw 'Startup controls unavailable.' }
             if (!$storageChoose.Enabled -or !$storageClean.Enabled -or !$storageMeasure.Enabled) { throw 'Storage controls missing.' }
@@ -47,8 +56,26 @@ $driver.Add_Tick({
             if((Get-ManualTestArgs 'victory-gpu' 'a::b' $true ' --locked') -ne 'test -p victory-gpu --lib --locked a::b -- --exact --nocapture --test-threads=1'){throw 'Targeted arguments incorrect.'}
             $badProfile=$profileV2.Replace('"crate":"victory-gpu"','"crate":"victory-gpu --workspace"')
             $rejected=$false;try{ConvertFrom-StudioProfile $badProfile|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Unsafe crate accepted.'}
+            $commitUrl='https://github.com/Belobug/VIctory-Belobug-AMD/commit/2083466bb80691d99b917d09cd9d55084338c55a'
+            $profileV3=$profileV2.Replace('"v":2','"v":3,"release":true,"ignored":true').Replace('https://github.com/Belobug/VIctory-Belobug-AMD/pull/7',$commitUrl)
+            Apply-StudioProfile $profileV3
+            if (!$manualRelease.Checked -or !$manualIgnored.Checked -or $revisionTarget.ExpectedSha -ne $commitUrl.Split('/')[-1] -or $runState -ne 'IDLE') {
+                throw 'Pinned v3 profile application failed.'
+            }
+            foreach ($invalid in @(
+                $profileV3.Replace('"ignored":true','"ignored":"true"'),
+                $profileV3.Replace($commitUrl,'https://github.com/Belobug/VIctory-Belobug-AMD/pull/7'),
+                $profileV3.Replace('pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws','')
+            )) {
+                $rejected=$false
+                try { $null=ConvertFrom-StudioProfile $invalid } catch { $rejected=$true }
+                if (!$rejected) { throw 'Invalid v3 profile accepted.' }
+            }
             Apply-StudioProfile $profileJson
-            if($manualCrate.Text -or $manualTest.Text -or $manualSerial.Checked){throw 'v1 did not clear v2 targeting.'}
+            if($manualCrate.Text -or $manualTest.Text -or $manualSerial.Checked -or $manualRelease.Checked -or $manualIgnored.Checked){throw 'v1 did not clear targeting.'}
+            $rejected=$false
+            try { $null=Get-ManualTestArgs 'victory-gpu' '' $true '' $true $true } catch { $rejected=$true }
+            if (!$rejected) { throw 'Ignored-only mode accepted a missing exact test.' }
             $crashLog='error: test failed, to rerun pass '+[char]96+'-p victory-shader --lib'+[char]96+[Environment]::NewLine+'exit code: 0xc0000005, STATUS_ACCESS_VIOLATION'
             if((Get-CrashPackage '' $crashLog 101) -ne 'victory-shader' -or (Get-CrashPackage '' 'error: failed' 101)){throw 'Crash parser failed.'}
             $defaultCrash=$crashLog.Replace('-p victory-shader --lib','--lib')
@@ -63,25 +90,44 @@ $driver.Add_Tick({
             if(!$ckCheck.Enabled -or !$profileLoad.Enabled){throw 'MANUAL controls not restored.'}
             $combo.SelectedIndex=0
             $ckTest.Checked=$true;$ckClippy.Checked=$true;$ckAgility.Checked=$false;$ckDepth.Checked=$false
-            $depthOutput="test pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws ... ok`r`ntest result: ok. 1 passed; 0 failed; 0 ignored"
-            if (!(Test-DepthResult $depthOutput '') -or (Test-DepthResult $depthOutput 'no PC dxc.exe; skipped') -or (Test-DepthResult $depthOutput 'no host depth bounds support; skipped') -or (Test-DepthResult 'test result: ok. 0 passed; 0 failed; 0 ignored' '')) { throw 'Depth result gate regression.' }
-            $tabs.SelectedTab=$overviewTab
-            Update-Dashboard
-            if($dashboard.RunState -ne 'IDLE' -or $dashboard.Completed -ne 0 -or $dashboard.Planned -ne 0 -or $dashboard.GpuEvidence -ne 'NOT VERIFIED'){throw 'Dashboard initial state incorrect.'}
-            $dashboard.SetRun('RUNNING','Workspace tests',7,12,[string[]]@('Cargo check','Workspace tests'),[string[]]@('PASS','RUNNING'))
-            if($dashboard.Completed -ne 7 -or $dashboard.Planned -ne 12 -or $dashboard.GpuEvidence -ne 'NOT VERIFIED'){throw 'Dashboard state binding failed.'}
-            $dashboard.Sample(54,42,6,1.71)
-            $dashboard.Sample(60,44,8,1.8)
+            $nl = [Environment]::NewLine
+            $testLine = "test $script:depthTestName ..."
+            $depthOutput = "$testLine ok" + $nl + 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured'
+            $ignoredOutput = "$testLine ignored" + $nl + 'test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured'
+            $proof = 'NATIVE DEPTH READBACK PASSED: AMD Radeon RX 9070 GRE PCI 1002:7550'
+            $cases = @(
+                @{ Name='silent'; Output=$depthOutput; Log=''; Execution='NOT VERIFIED'; Completed=$true }
+                @{ Name='unsupported'; Output=$depthOutput; Log='no host depth bounds support; skipped'; Execution='SKIPPED'; Completed=$true }
+                @{ Name='missing shader compiler'; Output=$depthOutput; Log='no PC dxc.exe; skipped'; Execution='SKIPPED'; Completed=$true }
+                @{ Name='missing host'; Output=$depthOutput; Log="WARN no host D3D12 device; command lists will not run"; Execution='SKIPPED'; Completed=$true }
+                @{ Name='ignored'; Output=$ignoredOutput; Log=''; Execution='SKIPPED'; Completed=$true }
+                @{ Name='missing test'; Output='test result: ok. 0 passed; 0 failed; 0 ignored'; Log=$proof; Execution='NOT VERIFIED'; Completed=$false }
+                @{ Name='proof'; Output=$depthOutput; Log=$proof; Execution='VERIFIED'; Completed=$true }
+                @{ Name='ambiguous proof'; Output=$depthOutput; Log=($proof+$nl+$proof); Execution='NOT VERIFIED'; Completed=$true }
+                @{ Name='software'; Output=$depthOutput; Log='NATIVE DEPTH READBACK PASSED: Microsoft Basic Render Driver PCI 1414:008c'; Execution='NOT VERIFIED'; Completed=$true }
+                @{ Name='skip overrides proof'; Output=$depthOutput; Log=($proof+$nl+'no PC dxc.exe; skipped'); Execution='SKIPPED'; Completed=$true }
+                @{ Name='inline proof'; Output=$depthOutput.Replace("$testLine ok", "$testLine $proof" + $nl + 'ok'); Log=''; Execution='VERIFIED'; Completed=$true }
+            )
+            foreach ($case in $cases) {
+                $result = Get-DepthValidation $case.Output $case.Log
+                if ($result.Completed -ne $case.Completed -or $result.GpuExecution -ne $case.Execution) {
+                    throw "Depth validation classification failed: $($case.Name)"
+                }
+            }
+            $verifiedStep = @{ Kind='depthtest'; GpuExecution='VERIFIED' }
+            $skippedStep = @{ Kind='depthtest'; GpuExecution='SKIPPED' }
+            $unverifiedStep = @{ Kind='depthtest'; GpuExecution='NOT VERIFIED' }
+            if ((Get-CompletedValidationStatus @($verifiedStep, @{Kind='tests'})) -ne 'PASS' -or
+                (Get-CompletedValidationStatus @($verifiedStep, $skippedStep)) -ne 'SKIPPED' -or
+                (Get-CompletedValidationStatus @($skippedStep, $unverifiedStep)) -ne 'NOT VERIFIED') {
+                throw 'Mixed validation results must not hide skipped or unverified steps.'
+            }
             if ($PreviewPath) {
                 $bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height)
                 try { $form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height))); $bitmap.Save($PreviewPath,[Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
             }
-            Update-Dashboard
             $form.Size=New-Object Drawing.Size(800,590)
-            $tabs.SelectedTab=$overviewTab
-            $testBitmap=New-Object Drawing.Bitmap($dashboard.Width,$dashboard.Height)
-            try{$dashboard.DrawToBitmap($testBitmap,(New-Object Drawing.Rectangle(0,0,$dashboard.Width,$dashboard.Height)))}finally{$testBitmap.Dispose()}
-            $tabs.SelectedTab=$aiTab
+            $tabs.SelectedIndex=4
             if ($reviewPages.TabPages.Count -ne 2) { throw 'AI Review panels missing.' }
             $prompt=New-ReviewPrompt 'fixture evidence'
             if ($prompt -notmatch 'fixture evidence' -or $prompt -match 'BEGIN PEER REVIEW|Claude') { throw 'GPT-only review prompt invalid.' }
@@ -123,12 +169,22 @@ $driver.Add_Tick({
             $ckClippy.Checked=$false
             # Consent applies exclusively to the temporary, locally generated Rust fixture.
             function script:Confirm-StudioRun([string]$message) { return ($workDir -eq $sample) }
+            $manualCrate.Text='studio_fixture'
+            $manualTest.Text='studio_release'
+            $manualRelease.Checked=$true
+            $manualIgnored.Checked=$true
             $script:phase=1
             $runButton.PerformClick()
             if ($script:runState -ne 'RUNNING') { throw 'UI did not start the fixture.' }
         } elseif ($script:phase -eq 1 -and $script:runState -ne 'RUNNING') {
             $report=[IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))
             if ($runState -ne 'PASS' -or $report -notmatch '1 passed' -or $report -notmatch 'Local workspace:' -or $report -match 'Pinned commit:') { throw $report }
+            if ($report -notmatch 'test --release -p studio_fixture --lib studio_release -- --exact --nocapture --ignored' -or
+                $report -notmatch 'Release build: True') { throw 'Release/ignored desktop arguments missing.' }
+            $manualCrate.Clear()
+            $manualTest.Clear()
+            $manualRelease.Checked=$false
+            $manualIgnored.Checked=$false
             if (!$updateButton.Enabled -or !$copyButton.Enabled) { throw 'Post-run controls unavailable.' }
             # Redirect only clone/fetch transport to a local fixture. All Git commands and validation gates are real.
             [IO.File]::WriteAllText((Join-Path $sample '.gitignore'),"/target/")
@@ -153,7 +209,24 @@ edition = "2021"
 members = ["xtask"]
 resolver = "2"
 '@)
-            [IO.File]::WriteAllText((Join-Path $sample 'src/lib.rs'),'#[cfg(test)] mod pipeline { pub mod host { pub mod tests { #[test] fn depth_bounds_pipeline_loads_and_filters_draws() { assert_eq!(2+2,4); } } } }')
+            [IO.File]::WriteAllText((Join-Path $sample 'src/lib.rs'),@'
+#[cfg(test)]
+mod pipeline {
+    pub mod host {
+        pub mod tests {
+            #[test]
+            fn depth_bounds_pipeline_loads_and_filters_draws() {
+                if std::env::var_os("VIREX_STUDIO_FIXTURE_DEPTH_SKIP").is_some() {
+                    eprintln!("no host depth bounds support; skipped");
+                    return;
+                }
+                eprintln!("CARD_LEVEL_BENCH steps=512 copies=true overlap=false: old 10.000 us, new 4.000 us, 2.500x");
+                assert_eq!(2 + 2, 4);
+            }
+        }
+    }
+}
+'@)
             [IO.File]::WriteAllText((Join-Path $sample '.cargo/config.toml'),'[alias]' + [Environment]::NewLine + 'xtask = "run --quiet --package xtask --"')
             [IO.File]::WriteAllText((Join-Path $sample 'xtask/Cargo.toml'),@'
 [package]
@@ -229,7 +302,20 @@ fn main() {
             if ($runState -ne 'RUNNING') { throw 'Agility test did not start.' }
         } elseif ($script:phase -eq 32 -and $script:runState -ne 'RUNNING') {
             $report=[IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))
-            if ($runState -ne 'PASS' -or !$machine.AgilityStaged -or !$env:CARGO_TARGET_DIR.EndsWith('-agility') -or @($steps | Where-Object { $_.Kind -eq 'depthtest' -and $_.Status -eq 'PASS' }).Count -ne 3 -or !$report.Contains('Agility SDK staged (files present): True')) { throw $report }
+            if ($runState -ne 'NOT VERIFIED' -or $status.Text -ne 'NOT VERIFIED' -or $overviewGpu.Text -ne 'NOT VERIFIED' -or
+                $status.ForeColor -ne $amber -or !$machine.AgilityStaged -or !$env:CARGO_TARGET_DIR.EndsWith('-agility') -or @($steps | Where-Object { $_.Kind -eq 'depthtest' -and $_.Status -eq 'PASS' }).Count -ne 3 -or !$report.Contains('Agility SDK staged (files present): True')) { throw $report }
+            $bench = Get-Content -LiteralPath (Join-Path $runDir 'benchmark-summary.json') -Raw | ConvertFrom-Json
+            $meta = Get-Content -LiteralPath (Join-Path $runDir 'run.json') -Raw | ConvertFrom-Json
+            if ($report -notmatch 'Status: NOT VERIFIED' -or $report -notmatch 'GPU execution: NOT VERIFIED' -or
+                $meta.state -ne 'NOT VERIFIED' -or
+                @($steps | Where-Object { $_.Kind -eq 'depthtest' -and $_.GpuExecution -eq 'NOT VERIFIED' }).Count -ne 3) {
+                throw 'Passing D3D12 test fixture was not marked as GPU-unverified.'
+            }
+            if ($bench[0].sampleCount -ne 3 -or $bench[0].speedup -ne 2.5 -or
+                $report -notmatch 'Repeated benchmark measurements' -or
+                @(Import-Csv -LiteralPath (Join-Path $runDir 'benchmark.csv')).Count -ne 3) {
+                throw 'Desktop report or benchmark exports lost repeated measurements.'
+            }
             if (!$env:CARGO_TARGET_DIR.StartsWith($alternate,[StringComparison]::OrdinalIgnoreCase)) {throw 'Actual build did not use alternate cache.'}
             if (Test-StagedAgility ($env:CARGO_TARGET_DIR.Substring(0,$env:CARGO_TARGET_DIR.Length-8))) { throw 'Agility polluted the baseline cache.' }
             $modeSwitch.Checked=$true
@@ -239,11 +325,36 @@ fn main() {
             if($runState -ne 'RUNNING'){throw 'AUTO D3D12 did not start.'}
         } elseif ($script:phase -eq 34 -and $script:runState -ne 'RUNNING') {
             $report=[IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))
-            if($runState -ne 'PASS' -or $report -notmatch 'Execution mode: AUTO' -or @($steps|Where-Object {$_.Kind -eq 'depthtest'}).Count -ne 3 -or @($steps|Where-Object {$_.Name -eq 'L3 | Workspace tests'}).Count -ne 1){throw $report}
-            foreach($level in 0..4){if($levelResults["$level"] -ne 'PASS' -or !(Test-Path -LiteralPath (Join-Path $runDir "LEVEL-$level.txt") -PathType Leaf)){throw "Missing AUTO checkpoint $level"}}
+            if($runState -ne 'NOT VERIFIED' -or $report -notmatch 'Execution mode: AUTO' -or @($steps|Where-Object {$_.Kind -eq 'depthtest'}).Count -ne 3 -or @($steps|Where-Object {$_.Name -eq 'L3 | Workspace tests'}).Count -ne 1){throw $report}
+            foreach ($level in 0..4) {
+                $state = if ($level -eq 2) { 'NOT VERIFIED' } else { 'PASS' }
+                $checkpoint = Get-Content -LiteralPath (Join-Path $runDir "LEVEL-$level.txt") -Raw
+                if ($levelResults["$level"] -ne $state -or !$checkpoint.Contains("AUTO LEVEL $level | $state")) {
+                    throw "Incorrect AUTO checkpoint $level"
+                }
+            }
             $names=@($steps|ForEach-Object {$_.Name});$depthLast=[array]::IndexOf($names,'L2 | D3D12 depth bounds (3/3)');$workspaceIndex=[array]::IndexOf($names,'L3 | Workspace tests')
             if($depthLast -lt 0 -or $workspaceIndex -le $depthLast){throw 'Wrong stage order.'}
             $modeSwitch.Checked=$false
+            $ckCheck.Checked=$false; $ckTest.Checked=$true; $ckClippy.Checked=$false
+            $ckDepth.Checked=$false; $ckAgility.Checked=$true; $ckRepeat.Checked=$false
+            $manualCrate.Text='victory-gpu'
+            $manualTest.Text=$script:depthTestName
+            $env:VIREX_STUDIO_FIXTURE_DEPTH_SKIP='1'
+            $script:phase=37
+            $runButton.PerformClick()
+            if ($runState -ne 'RUNNING') { throw 'Targeted depth skip fixture did not start.' }
+        } elseif ($script:phase -eq 37 -and $script:runState -ne 'RUNNING') {
+            $env:VIREX_STUDIO_FIXTURE_DEPTH_SKIP=$null
+            $report=[IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))
+            $skipped = @($steps | Where-Object { $_.Kind -eq 'depthtest' -and $_.Status -eq 'SKIPPED' })
+            if ($runState -ne 'SKIPPED' -or $status.Text -ne 'SKIPPED' -or $status.ForeColor -ne $amber -or
+                $skipped.Count -ne 1 -or $report -notmatch 'GPU execution: SKIPPED' -or
+                $report -notmatch 'D3D12 depth bounds requested: True') {
+                throw $report
+            }
+            $manualCrate.Clear()
+            $manualTest.Clear()
             $combo.SelectedIndex=1
             Set-LocalProject $sample
             [IO.File]::WriteAllText((Join-Path $sample 'src/lib.rs'),'#[test] fn studio_smoke() { panic!("intentional test failure"); }')
@@ -272,9 +383,11 @@ fn main() {
             if(!$cacheWorker -or $runButton.Enabled -or $updateButton.Enabled){throw 'Cache worker gating failed.'}
         } elseif ($script:phase -eq 33 -and !$script:cacheWorker) {
             if($storageResult.Text -notlike 'Cache mérete:*' -or !$runButton.Enabled -or !$updateButton.Enabled){throw "Cache measurement failed: $($storageResult.Text)"}
-            # Run the real background lookup through a fixed release response, with no network.
             $module=[IO.File]::ReadAllText((Join-Path $appDir 'StudioUpdate.ps1'))
-            $stub="function Invoke-RestMethod { return @{ tag_name='studio-stable'; draft=0; prerelease=0; assets=@(@{ name='VIREX-Test-Studio-$studioVersion-Setup.exe'; state='uploaded' }) } }"
+            $tag = if ($ExpectPreview) { 'studio-preview' } else { 'studio-stable' }
+            $prerelease = if ($ExpectPreview) { 1 } else { 0 }
+            $suffix = if ($ExpectPreview) { '-Preview' } else { '' }
+            $stub = 'function Invoke-RestMethod {{ param($Uri) if ($Uri -notlike "*/{0}") {{ throw "Wrong update endpoint" }}; return @{{ tag_name="{0}"; draft=0; prerelease={1}; assets=@(@{{ name="VIREX-Test-Studio-{2}{3}-Setup.exe"; state="uploaded" }}) }} }}' -f $tag,$prerelease,$studioVersion,$suffix
             [IO.File]::WriteAllText((Join-Path $fixture 'StudioUpdate.ps1'),$module+[Environment]::NewLine+$stub,[Text.Encoding]::UTF8)
             $script:appDir=$fixture
             $script:phase=4
@@ -302,6 +415,7 @@ try {
     $driver.Dispose()
     $env:LOCALAPPDATA=$oldAppData
     $env:CARGO_NET_OFFLINE=$oldOffline
+    $env:VIREX_STUDIO_FIXTURE_DEPTH_SKIP=$oldDepthSkip
     $actual=[IO.Path]::GetFullPath($fixture)
     if ([IO.Path]::GetDirectoryName($actual) -eq $tempBase.TrimEnd('\') -and [IO.Path]::GetFileName($actual) -match '^virex-desktop-[0-9a-f]{32}$') {
         Remove-Item -LiteralPath $actual -Recurse -Force

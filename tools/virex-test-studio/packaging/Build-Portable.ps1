@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param()
+param([switch]$Preview)
 $ErrorActionPreference = 'Stop'
 $project = Split-Path -Parent $PSScriptRoot
 $version = [IO.File]::ReadAllText((Join-Path $project 'VERSION')).Trim()
@@ -15,16 +15,18 @@ foreach ($line in [IO.File]::ReadLines((Join-Path $PSScriptRoot 'Studio.iss'))) 
         $files[$destination] = $inputFile
     }
 }
+if (!$Preview) { $files.Remove('PREVIEW') }
 foreach ($relative in @(
     '.gitignore', 'START-VIREX.cmd', 'test_ai_review.py', 'docs/README-HU-1.3.1.txt',
     'packaging/Build.ps1', 'packaging/Build-Portable.ps1', 'packaging/make_icons.py',
-    'packaging/Studio.iss', 'packaging/StudioLauncher.cs', 'tests/Desktop.Tests.ps1', 'tests/Update.Tests.ps1'
+    'packaging/PREVIEW', 'packaging/Studio.iss', 'packaging/StudioLauncher.cs', 'tests/Desktop.Tests.ps1', 'tests/Update.Tests.ps1', 'tests/Benchmark.Tests.ps1'
 )) { $files[$relative] = Join-Path $project $relative }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $directory = Join-Path $project 'artifacts\portable'
 $null = [IO.Directory]::CreateDirectory($directory)
-$destination = Join-Path $directory "VIREX-Test-Studio-$version-Windows.zip"
+$previewSuffix = if ($Preview) { '-Preview' } else { '' }
+$destination = Join-Path $directory "VIREX-Test-Studio-$version$previewSuffix-Windows.zip"
 $partial = Join-Path $directory ([guid]::NewGuid().ToString('N') + '.zip')
 try {
     $archive = [IO.Compression.ZipFile]::Open($partial, 'Create')

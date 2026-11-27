@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([switch]$ValidateOnly, [string]$Compiler)
+param([switch]$ValidateOnly, [string]$Compiler, [switch]$Preview)
 $ErrorActionPreference = 'Stop'
 $project = Split-Path -Parent $PSScriptRoot
 $version = [IO.File]::ReadAllText((Join-Path $project 'VERSION')).Trim()
@@ -27,7 +27,13 @@ if (!$Compiler) {
     }
 }
 if (!$Compiler) { throw 'Install Inno Setup 6 or provide -Compiler with the path to ISCC.exe.' }
-& $Compiler "/DStudioVersion=$version" $recipe | Out-Host
+$defines = @("/DStudioVersion=$version")
+$previewSuffix = ''
+if ($Preview) {
+    $defines += '/DStudioPreview'
+    $previewSuffix = '-Preview'
+}
+& $Compiler @defines $recipe | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
-$setup = Join-Path $project "artifacts\installer\VIREX-Test-Studio-$version-Setup.exe"
+$setup = Join-Path $project "artifacts\installer\VIREX-Test-Studio-$version$previewSuffix-Setup.exe"
 Get-FileHash -LiteralPath $setup -Algorithm SHA256

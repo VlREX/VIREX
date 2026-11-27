@@ -4,20 +4,23 @@ $studioReleaseUrl = 'https://api.github.com/repos/VlREX/VIREX/releases/tags/stud
 $studioAssetBase = 'https://github.com/VlREX/VIREX/releases/download/studio-stable/'
 $studioMaxBytes = 128MB
 
-function Select-StudioUpdate($Release, [version]$Installed) {
-    if ($Release.tag_name -cne $studioChannel -or $Release.draft -ne $false -or $Release.prerelease -ne $false) {
+function Select-StudioUpdate($Release, [version]$Installed, [switch]$Preview) {
+    $channel = if ($Preview) { 'studio-preview' } else { $studioChannel }
+    $assetBase = if ($Preview) { 'https://github.com/VlREX/VIREX/releases/download/studio-preview/' } else { $studioAssetBase }
+    $suffix = if ($Preview) { '-Preview' } else { '' }
+    if ($Release.tag_name -cne $channel -or $Release.draft -ne $false -or $Release.prerelease -ne $Preview.IsPresent) {
         throw 'A kiadási csatorna adatai érvénytelenek.'
     }
     $candidates = foreach ($asset in $Release.assets) {
         if ($asset.state -ne 'uploaded') { continue }
-        if ($asset.name -cnotmatch '^VIREX-Test-Studio-((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))-Setup\.exe$') { continue }
+        if ($asset.name -cnotmatch ('^VIREX-Test-Studio-((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))' + $suffix + '-Setup\.exe$')) { continue }
         [pscustomobject]@{ Version = [version]$Matches[1]; Asset = $asset }
     }
     $latest = $candidates | Sort-Object Version -Descending | Select-Object -First 1
-    if (!$latest) { throw 'A stabil kiadáshoz még nincs Windows-telepítő.' }
+    if (!$latest) { throw 'Ehhez a kiadási csatornához még nincs Windows-telepítő.' }
     if ($latest.Version -le $Installed) { return [pscustomobject]@{ State='current' } }
     $asset = $latest.Asset
-    if ($asset.browser_download_url -cne ($studioAssetBase + $asset.name) -or
+    if ($asset.browser_download_url -cne ($assetBase + $asset.name) -or
         $asset.digest -notmatch '^sha256:([a-fA-F0-9]{64})$' -or
         [long]$asset.size -le 0 -or [long]$asset.size -gt $studioMaxBytes) {
         throw 'A kiadás címe, mérete vagy SHA-256 azonosítója érvénytelen.'
@@ -26,17 +29,18 @@ function Select-StudioUpdate($Release, [version]$Installed) {
         Url=$asset.browser_download_url; Hash=$asset.digest.Substring(7); Size=[long]$asset.size }
 }
 
-function Get-StudioUpdate([version]$Installed) {
+function Get-StudioUpdate([version]$Installed, [switch]$Preview) {
+    $url = if ($Preview) { 'https://api.github.com/repos/VlREX/VIREX/releases/tags/studio-preview' } else { $studioReleaseUrl }
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     try {
-        $release = Invoke-RestMethod -Uri $studioReleaseUrl -Headers @{Accept='application/vnd.github+json'} -UserAgent "VIREX-Test-Studio/$Installed" -TimeoutSec 20 -ErrorAction Stop
+        $release = Invoke-RestMethod -Uri $url -Headers @{Accept='application/vnd.github+json'} -UserAgent "VIREX-Test-Studio/$Installed" -TimeoutSec 20 -ErrorAction Stop
     } catch {
         if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) {
             return [pscustomobject]@{ State='unpublished' }
         }
         throw
     }
-    Select-StudioUpdate $release $Installed
+    Select-StudioUpdate $release $Installed -Preview:$Preview
 }
 
 function Copy-StudioAsset([IO.Stream]$InputStream, $Update, [string]$Directory) {

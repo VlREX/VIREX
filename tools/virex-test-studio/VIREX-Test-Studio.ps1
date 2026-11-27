@@ -158,6 +158,7 @@ $script:reports = Join-Path $script:root 'reports'
 $script:origin = 'https://github.com/VlREX/VIREX.git'
 $script:appDir = $PSScriptRoot
 $script:studioVersion = [IO.File]::ReadAllText((Join-Path $appDir 'VERSION')).Trim()
+$script:isPreview = Test-Path -LiteralPath (Join-Path $appDir 'PREVIEW') -PathType Leaf
 $script:localProject = $null
 $script:workDir = $repo
 $script:inheritedTargetDir = $env:CARGO_TARGET_DIR
@@ -202,7 +203,17 @@ try { $ownsMutex=$script:mutex.WaitOne(0) } catch [System.Threading.AbandonedMut
 if (-not $ownsMutex) { [System.Windows.Forms.MessageBox]::Show('Test Studio is already running.') | Out-Null; exit }
 
 function Color([string]$hex) { [System.Drawing.ColorTranslator]::FromHtml($hex) }
-$bg=Color '#0D1823'; $panel=Color '#13222F'; $fg=Color '#E5EDF7'; $muted=Color '#A5B5CA'; $cyan=Color '#00DAC6'; $green=Color '#51D88A'; $red=Color '#FF8181'
+$bg=Color '#0D1525'; $panel=Color '#19243B'; $fg=Color '#E5EDF7'; $muted=Color '#A5B5CA'; $cyan=Color '#77E2C6'; $green=Color '#51D88A'; $red=Color '#FF8181'
+$amber = Color '#FFD18C'
+function Get-ValidationStatusColor([string]$state) {
+    switch ($state) {
+        'PASS' { return $green }
+        'CANCELLED' { return $muted }
+        'NOT VERIFIED' { return $amber }
+        'SKIPPED' { return $amber }
+        default { return $red }
+    }
+}
 function Font([float]$size,[string]$family='Segoe UI',[bool]$bold=$false) {
     $style = [System.Drawing.FontStyle]::Regular; if ($bold) {$style=[System.Drawing.FontStyle]::Bold}
     New-Object System.Drawing.Font($family,$size,$style)
@@ -217,17 +228,11 @@ function Check($parent,[string]$value,[int]$x,[int]$y,[int]$w,[bool]$checked) {
     $c=New-Object System.Windows.Forms.CheckBox; $c.Text=$value; $c.Location=New-Object System.Drawing.Point($x,$y); $c.Size=New-Object System.Drawing.Size($w,27); $c.ForeColor=$fg; $c.Checked=$checked; $parent.Controls.Add($c); return $c
 }
 . (Join-Path $appDir 'Desktop.ps1')
-$script:overviewTab=New-Object Windows.Forms.TabPage
-$overviewTab.Text='Áttekintés';$overviewTab.BackColor=$bg
-$script:dashboard=New-Object VirexDashboard
-$dashboard.Dock='Fill';$overviewTab.Controls.Add($dashboard);$tabs.TabPages.Add($overviewTab)
-function Update-Dashboard {
-    $recent=@($script:steps | Select-Object -Last 5)
-    $done=@($script:steps | Where-Object {$_.Status -ne 'RUNNING'}).Count
-    $planned=if($script:runState -eq 'IDLE'){0}else{[math]::Max($progress.Maximum,$script:steps.Count)}
-    $current=if($script:active){[string]$script:active.Name}else{''}
-    $dashboard.SetRun($script:runState,$current,$done,$planned,[string[]]@($recent | ForEach-Object {$_.Name}),[string[]]@($recent | ForEach-Object {$_.Status}))
-}
+. (Join-Path $appDir 'Benchmark.ps1')
+$overviewTab=New-Object Windows.Forms.TabPage
+$overviewTab.Text='Áttekintés'
+$tabs.TabPages.Add($overviewTab)
+Add-StartPanel $overviewTab
 $logTab=New-Object System.Windows.Forms.TabPage; $logTab.Text='Napló'; $logTab.BackColor=$bg; $tabs.TabPages.Add($logTab)
 $script:terminal=New-Object System.Windows.Forms.RichTextBox; $terminal.Dock='Fill'; $terminal.ReadOnly=$true; $terminal.BackColor=Color '#0B1220'; $terminal.ForeColor=$fg; $terminal.Font=Font 10 'Consolas'; $terminal.WordWrap=$false; $terminal.DetectUrls=$false; $logTab.Controls.Add($terminal)
 $benchTab=New-Object System.Windows.Forms.TabPage; $benchTab.Text='Mérések'; $benchTab.BackColor=$bg; $tabs.TabPages.Add($benchTab)
@@ -258,7 +263,7 @@ $summaryTab=New-Object System.Windows.Forms.TabPage; $summaryTab.Text='Riport'; 
 $script:reportBox=New-Object System.Windows.Forms.TextBox; $reportBox.Multiline=$true; $reportBox.ReadOnly=$true; $reportBox.ScrollBars='Both'; $reportBox.WordWrap=$false; $reportBox.Dock='Fill'; $reportBox.BackColor=$bg; $reportBox.ForeColor=$fg; $reportBox.Font=Font 10 'Consolas'; $summaryTab.Controls.Add($reportBox)
 . (Join-Path $script:appDir 'AI-Review.ps1')
 Set-StudioTabStyle $tabs
-$welcome=Add-StartPanel $logTab
+Update-StudioOverview
 . (Join-Path $appDir 'DesktopUpdate.ps1')
 
 function Add-Log([string]$text,[System.Drawing.Color]$color=$fg) {
@@ -282,26 +287,13 @@ function Tool-Path([string]$name) {
 function Redact([string]$s) {
     if ($env:USERPROFILE) {$s=[regex]::Replace($s,[regex]::Escape($env:USERPROFILE),'%USERPROFILE%','IgnoreCase')}; return $s
 }
-function Bench-Rows([string]$s) {
-    foreach($line in ($s -split '\r?\n')) {
-        $a=$null; $b=$null; $c=$null; $unit='us'; $scenario=''
-        if ($line -match 'density=(\d+) ranges=(\d+) queries=(\d+) hits=(\d+) linear_us=([0-9.]+) indexed_us=([0-9.]+)(?: adaptive_us=([0-9.]+))?') {
-            $scenario="D$($Matches[1]) / $($Matches[2]) ranges / $($Matches[3]) queries / $($Matches[4]) hits"; $a=[double]::Parse($Matches[5],[cultureinfo]::InvariantCulture); $b=[double]::Parse($Matches[6],[cultureinfo]::InvariantCulture); if($Matches[7]){$c=[double]::Parse($Matches[7],[cultureinfo]::InvariantCulture)}
-        } elseif ($line -match 'changed=(\d+)% chunk=(\d+) original_ms=([0-9.]+) select_ms=([0-9.]+) candidate_ms=([0-9.]+)') {
-            $scenario="$($Matches[1])% changed / $($Matches[2]) B"; $unit='ms'; $a=[double]::Parse($Matches[3],[cultureinfo]::InvariantCulture); $b=[double]::Parse($Matches[4],[cultureinfo]::InvariantCulture); $c=[double]::Parse($Matches[5],[cultureinfo]::InvariantCulture)
-        } elseif ($line -match 'case=(\S+) writers=(\d+) pages=(\d+) original_calls=(\d+) candidate_calls=(\d+) original_us=([0-9.]+) candidate_us=([0-9.]+)') {
-            $scenario="$($Matches[1]) / $($Matches[2]) writers / $($Matches[3]) pages / calls $($Matches[4])->$($Matches[5])"; $a=[double]::Parse($Matches[6],[cultureinfo]::InvariantCulture); $b=[double]::Parse($Matches[7],[cultureinfo]::InvariantCulture)
-        } elseif ($line -match '^kind=(\S+) blocks=(\d+) (?:reference|sweep)_us=([0-9.]+) (?:scc|worklist)_us=([0-9.]+) speedup=[0-9.]+$') {
-            $scenario="$($Matches[1]) / $($Matches[2]) blocks"; $a=[double]::Parse($Matches[3],[cultureinfo]::InvariantCulture); $b=[double]::Parse($Matches[4],[cultureinfo]::InvariantCulture)
-        } elseif ($line -match '^mode=(\S+) slots=(\d+) fanout=(\d+) scan_us=([0-9.]+) index_us=([0-9.]+) speedup=[0-9.]+$') {
-            $scenario="$($Matches[1]) / $($Matches[2]) slots / fanout $($Matches[3])"; $a=[double]::Parse($Matches[4],[cultureinfo]::InvariantCulture); $b=[double]::Parse($Matches[5],[cultureinfo]::InvariantCulture)
-        }
-        if ($null -ne $a -and $null -ne $b) {
-            $best=$b; if($null -ne $c){$best=[math]::Min($b,$c)}; $ratio='n/a'; if($best -gt 0){$ratio=('{0:F2}x' -f ($a/$best))}
-            $ct='-';if($null -ne $c){$ct=$c.ToString('F4',[cultureinfo]::InvariantCulture)}
-            $idx=$grid.Rows.Add($scenario,$a.ToString('F4',[cultureinfo]::InvariantCulture),$b.ToString('F4',[cultureinfo]::InvariantCulture),$ct,$ratio,$unit)
-            if($best -lt $a){$grid.Rows[$idx].Cells[4].Style.ForeColor=$green}else{$grid.Rows[$idx].Cells[4].Style.ForeColor=$red}
-        }
+function Add-BenchmarkRows($rows) {
+    $culture = [cultureinfo]::InvariantCulture
+    foreach ($row in $rows) {
+        $adaptive = if ($null -eq $row.adaptive) { '-' } else { $row.adaptive.ToString('F4', $culture) }
+        $index = $grid.Rows.Add($row.scenario, $row.original.ToString('F4', $culture),
+            $row.indexed.ToString('F4', $culture), $adaptive, ($row.speedup.ToString('F2', $culture) + 'x'), $row.unit)
+        $grid.Rows[$index].Cells[4].Style.ForeColor = if ($row.speedup -gt 1) { $green } else { $red }
     }
 }
 function Update-Tail {
@@ -326,6 +318,7 @@ function Update-Tail {
 function Save-Report {
     if(!$script:runDir){return}
     $brief=New-Object System.Text.StringBuilder; $full=New-Object System.Text.StringBuilder
+    $depthRequested = $script:machine.DepthRequested -or $script:machine.ManualDepth
     $header=@(
         "VIREX TEST STUDIO $studioVersion | LOCAL VERIFICATION"
         ('Status: '+$script:runState)
@@ -347,15 +340,15 @@ function Save-Report {
         ('Windows build detected: '+$script:machine.WindowsBuild)
         ('Agility SDK requested: '+$script:machine.AgilityRequested)
         ('Agility SDK staged (files present): '+$script:machine.AgilityStaged)
-        ('D3D12 depth bounds requested: '+$script:machine.DepthRequested)
-        $(if($script:machine.DepthRequested){'A passing GPU test can return early without exercising hardware; explicit skip messages fail the targeted gate.'})
+        ('D3D12 depth bounds requested: '+$depthRequested)
+        $(if($depthRequested){'D3D12 hardware verification requires a native adapter and successful depth readbacks recorded by the test.'})
         ('Cargo target directory: '+$script:machine.TargetDirectory)
         ('Free space at start (GiB): '+$script:machine.Storage)
         ('System-wide hardware samples: '+$script:monitorSamples)
         $(foreach($key in @('CPU','RAM','GPU','VRAM')) { if($monitorPeak.ContainsKey($key)){ 'Sampled peak '+$key+': '+$monitorPeak[$key]+$(if($key -eq 'VRAM'){' GiB'}else{' %'})} })
         ('Execution mode: '+$(if($script:machine.AutoMode){'AUTO'}else{'MANUAL'}))
         $(if($script:machine.AutoMode){'Auto profile: '+$script:machine.AutoProfile; foreach($stage in (Get-AutoPlan $script:machine.DepthRequested)){ $number=[string]$stage.Substring(1,1); $stage+' | '+$(if($levelResults.ContainsKey($number)){$levelResults[$number]}else{'NOT RUN'}) }})
-        $(if($script:machine.ManualCrate){'Manual crate: '+$script:machine.ManualCrate;'Exact test: '+$script:machine.ManualTest;'Serial: '+$script:machine.ManualSerial})
+        $(if($script:machine.ManualCrate){'Manual crate: '+$script:machine.ManualCrate;'Exact test: '+$script:machine.ManualTest;'Serial: '+$script:machine.ManualSerial;'Release build: '+$script:machine.ManualRelease;'Ignored only: '+$script:machine.ManualIgnored})
         $(if($script:machine.CrashPackage){'Crash package: '+$script:machine.CrashPackage;'Original crash exit: '+$script:machine.CrashOriginalExit;'Crash diagnostic: '+$script:machine.CrashResult; if($script:machine.CrashCandidate){'Suspected serial test: '+$script:machine.CrashCandidate};'Original failure remains FAIL even if a retry passes.'})
         ('Rust test repetitions requested: '+$script:machine.Repeat)
         'Synthetic benchmarks are not game FPS. Validation runner does not upload reports.'
@@ -363,7 +356,11 @@ function Save-Report {
     ) -join "`r`n"
     $null=$brief.AppendLine($header); $null=$full.AppendLine($header)
     foreach($step in $script:steps){
-        $exitText=if($null -eq $step.Exit){'UNAVAILABLE'}else{[string]$step.Exit}; $head="[$($step.Status)] $($step.Name) | exit=$exitText | $($step.Seconds)s`r`n$($step.Command)"; if($step.Error){$head+="`r`nRunner detail: $($step.Error)"}; $null=$brief.AppendLine($head); $null=$full.AppendLine($head)
+        $exitText=if($null -eq $step.Exit){'UNAVAILABLE'}else{[string]$step.Exit}; $head="[$($step.Status)] $($step.Name) | exit=$exitText | $($step.Seconds)s`r`n$($step.Command)"; if($step.Error){$head+="`r`nRunner detail: $($step.Error)"}
+        if ($step.GpuExecution) { $head += [Environment]::NewLine + 'GPU execution: ' + $step.GpuExecution }
+        if ($step.GpuEvidence) { $head += [Environment]::NewLine + $step.GpuEvidence }
+        $null = $brief.AppendLine($head)
+        $null = $full.AppendLine($head)
         $out=Read-Shared $step.Out; $err=Read-Shared $step.Err
         $null=$full.AppendLine("--- stdout ---`r`n$out`r`n--- stderr ---`r`n$err")
         $lines=@(($out+"`n"+$err) -split '\r?\n' | Where-Object {$_ -match 'test result:|\bPASS:|^density=|^changed=|^case=|^kind=|^mode=|error\[|error:|warning:|panicked at|FAILED|Finished|^rustc |^cargo |^git version|^[a-f0-9]{40}$|^AVX2 supported|D3D12 Agility SDK|depth_bounds_pipeline_loads_and_filters_draws|no host depth bounds support|no PC dxc.exe'})
@@ -371,13 +368,29 @@ function Save-Report {
         if($step.Status -ne 'PASS'){$lines+=@(($out+"`n"+$err) -split '\r?\n' | Select-Object -Last 35)}
         foreach($line in $lines){$null=$brief.AppendLine($line)}; $null=$brief.AppendLine('')
     }
+    $benchmarkRows = @(foreach ($step in $script:steps) { if ($step.Benchmarks) { $step.Benchmarks } })
+    $benchmarkSummaries = @(Get-BenchmarkSummaries $script:steps)
+    $benchmarkTable = @(Format-BenchmarkSummaryTable $benchmarkSummaries) + @(Format-BenchmarkTable $benchmarkRows)
+    if ($benchmarkTable.Count) {
+        $table = Redact ($benchmarkTable -join [Environment]::NewLine)
+        $null = $brief.AppendLine($table)
+        $null = $full.AppendLine($table)
+    }
     $short=Redact $brief.ToString(); $all=Redact $full.ToString()
     $reportBox.Text=if($short.Length -gt 200000){$short.Substring(0,200000)+"`r`n[Preview shortened; full report saved.]"}else{$short}
     [System.IO.File]::WriteAllText((Join-Path $runDir 'REPORT.txt'),$short,[System.Text.Encoding]::UTF8)
     [System.IO.File]::WriteAllText((Join-Path $runDir 'FULL-LOG.txt'),$all,[System.Text.Encoding]::UTF8)
     $meta=@{state=$script:runState;preset=$script:runPreset;started=$script:started.ToString('o');hardware=$script:machine;steps=@($script:steps.ToArray())}
     $meta | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath (Join-Path $runDir 'run.json') -Encoding UTF8
-    if($grid.Rows.Count -gt 0){$rows=foreach($row in $grid.Rows){[pscustomobject]@{scenario=$row.Cells[0].Value;original=$row.Cells[1].Value;indexed=$row.Cells[2].Value;adaptive=$row.Cells[3].Value;speedup=$row.Cells[4].Value;unit=$row.Cells[5].Value}}; $rows | Export-Csv -LiteralPath (Join-Path $runDir 'benchmark.csv') -NoTypeInformation -Encoding UTF8}
+    if ($benchmarkRows.Count -gt 0) {
+        $benchmarkRows | Export-Csv -LiteralPath (Join-Path $runDir 'benchmark.csv') -NoTypeInformation -Encoding UTF8
+        ConvertTo-Json -InputObject $benchmarkRows -Depth 4 | Set-Content -LiteralPath (Join-Path $runDir 'benchmark.json') -Encoding UTF8
+        $table | Set-Content -LiteralPath (Join-Path $runDir 'benchmark.md') -Encoding UTF8
+        if ($benchmarkSummaries.Count) {
+            foreach ($summary in $benchmarkSummaries) { $summary.command = Redact $summary.command }
+            ConvertTo-Json -InputObject $benchmarkSummaries -Depth 5 | Set-Content -LiteralPath (Join-Path $runDir 'benchmark-summary.json') -Encoding UTF8
+        }
+    }
 }
 function Set-Idle([string]$state) {
     if($script:diagnosticActive){
@@ -385,16 +398,18 @@ function Set-Idle([string]$state) {
         elseif($state -eq 'RUNNER_ERROR'){$script:machine.CrashResult+=' | DIAGNOSTICS INCOMPLETE'}
         $state='FAIL'
     }
-    $script:runState=$state; $status.Text=$state; $status.ForeColor=if($state -eq 'PASS'){$green}elseif($state -eq 'CANCELLED'){$muted}else{$red}; $script:queue.Clear(); $script:proc=$null; $script:active=$null; $runButton.Enabled=(-not $script:unsafeState); $stopButton.Enabled=$false; $combo.Enabled=$true; $updateButton.Enabled=!$script:unsafeState; $openSource.Enabled=$true
+    $progress.Style='Continuous'
+    $script:runState=$state; $status.Text=$state; $status.ForeColor=Get-ValidationStatusColor $state; $script:queue.Clear(); $script:proc=$null; $script:active=$null; $runButton.Enabled=(-not $script:unsafeState); $stopButton.Enabled=$false; $combo.Enabled=$true; $updateButton.Enabled=!$script:unsafeState; $openSource.Enabled=$true
     foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckFull,$ckWarp,$ckRepeat)){$c.Enabled=$true}; if (Test-WorkspaceTarget) {
         $ckFull.Enabled=$false; $ckWarp.Enabled=$false; $ckBench.Enabled=$false
     } else { $ckBench.Enabled=[bool]$combo.SelectedItem.Preset.Bench }
     $ckAgility.Enabled=(Test-WorkspaceTarget) -and !(Test-LocalTarget); $ckDepth.Enabled=$ckAgility.Enabled
-    if($script:machine.AutoMode -and !$script:diagnosticActive -and $steps.Count -gt 0 -and $state -ne 'PASS'){
+    if($script:machine.AutoMode -and !$script:diagnosticActive -and $steps.Count -gt 0 -and $state -in @('FAIL','RUNNER_ERROR','CANCELLED')){
         $level=Get-StepLevel $steps[$steps.Count-1]
         try{Write-AutoCheckpoint $level $state}catch{Add-Log ('Checkpoint save failed: '+$_.Exception.Message) $red}
     }
     Update-ExecutionMode
+    Update-StudioOverview
     $labState.Text="$($script:machine.AutoProfile) | $state"
     if($script:machine.AutoMode -and !$script:closeAfterStop){$tabs.SelectedTab=$summaryTab}
     $copyButton.Enabled=$false; $copyFullButton.Enabled=$false
@@ -405,10 +420,16 @@ function Set-Idle([string]$state) {
 }
 function Start-Next {
     if($script:cancelled){Set-Idle 'CANCELLED';return}
-    if($script:queue.Count -eq 0){if($script:diagnosticActive){Set-Idle 'FAIL'}else{Set-Idle 'PASS'};return}
+    if ($script:queue.Count -eq 0) {
+        if ($script:diagnosticActive) { Set-Idle 'FAIL' }
+        else { Set-Idle (Get-CompletedValidationStatus $script:steps) }
+        return
+    }
     $script:exitSeenAt=$null; $script:stopAt=$null
     $s=$script:queue.Dequeue(); $num=$script:steps.Count+1; $s.Out=Join-Path $runDir ('{0:D2}-stdout.log' -f $num); $s.Err=Join-Path $runDir ('{0:D2}-stderr.log' -f $num); $s.OutBytes=0; $s.ErrBytes=0; $s.Start=[DateTime]::UtcNow; $s.Command=$s.Exe+' '+$s.Args; $s.Status='RUNNING'; $s.Exit=$null; $s.Error=''; $s.Seconds=0; $script:active=$s; $script:steps.Add($s); $progressText.Text="$num / $($progress.Maximum)"; Add-Log "`r`n[$num] $($s.Name)`r`n> $($s.Command)`r`n" $cyan
     if($script:diagnosticActive){$labState.Text=$s.Name; $status.Text='DIAGNOSTICS'}elseif($script:machine.AutoMode){$labState.Text='L'+(Get-StepLevel $s)+' | '+$s.Name; $status.Text='AUTO L'+(Get-StepLevel $s); Update-LabProgress (Get-StepLevel $s)}
+    $progress.Style='Marquee'
+    Update-StudioOverview
     try {
         if($script:machine.AutoMode){$null=Get-StorageInfo $script:machine.TargetDirectory}
         # Child processes inherit only this process's selected WARP setting.
@@ -417,7 +438,6 @@ function Start-Next {
 }
 $script:timer=New-Object System.Windows.Forms.Timer; $timer.Interval=400
 $timer.Add_Tick({
-    if($tabs.SelectedTab -eq $overviewTab){Update-Dashboard}
     if(!$script:proc){return}
     try {
         Update-Tail
@@ -472,19 +492,42 @@ $timer.Add_Tick({
             $script:machine.AgilityStaged=$valid
             if(!$valid){$s.Error='Agility parancs sikeres, de a szükséges debug/D3D12 DLL-ek hiányoznak.'}
         }
-        if($valid -and $s.Kind -eq 'depthtest') {
-            $valid=Test-DepthResult $out $err
-            if(!$valid){$s.Error='A pontos GPU-teszt nem igazolható, vagy a teszt kihagyást jelzett.'}
+        if ($s.Kind -eq 'depthtest') {
+            $s.GpuExecution = 'NOT VERIFIED'
+            if ($valid -and !$script:cancelled) {
+                $depthResult = Get-DepthValidation $out $err
+                $valid = $depthResult.Completed
+                $s.GpuExecution = $depthResult.GpuExecution
+                $s.GpuEvidence = $depthResult.Evidence
+                if (!$valid) { $s.Error = 'A kiválasztott D3D12-teszt futása nem igazolható.' }
+                elseif ($depthResult.SkipReason) { $s.Error = $depthResult.SkipReason }
+            }
         }
-        if($valid -and $s.Kind -in @('tests','diagserial','diagexact')){$valid=($out -match 'test result: ok\. [1-9][0-9]* passed; 0 failed')}
-        if($valid -and $s.Kind -eq 'bench'){Bench-Rows $out; $valid=($out -match 'PASS:') -and ($grid.Rows.Count -gt 0)}
-        if($valid -and $s.Kind -eq 'cargo_bench'){Bench-Rows $out; $valid=($out -match 'PASS:') -and ($out -match 'test result: ok\. 1 passed; 0 failed') -and ($grid.Rows.Count -eq $script:runPreset.BenchCount)}
+        if ($s.Kind -in @('bench','cargo_bench','tests','depthtest')) {
+            $s.Benchmarks = @(Get-BenchmarkStepRows $out $err)
+            Add-BenchmarkRows $s.Benchmarks
+            $hasPassMarker = $out -match 'PASS:' -or $err -match 'PASS:'
+            if ($valid -and $s.Kind -eq 'bench') {
+                $valid = $hasPassMarker -and ($s.Benchmarks.Count -gt 0)
+            }
+            if ($valid -and $s.Kind -eq 'cargo_bench') {
+                $valid = $hasPassMarker -and ($out -match 'test result: ok\. 1 passed; 0 failed') -and
+                    ($s.Benchmarks.Count -eq $script:runPreset.BenchCount)
+            }
+        }
         $storageFailure=(!$valid -and (($out+"`n"+$err) -match '(?i)no space (left )?on device|not enough space on (the )?disk|disk full|Nincs elég hely a lemezen'))
         if($storageFailure){$s.Error='Tárhelyhiba: a fordítási eredmény nem értékelhető. Szabadíts fel helyet a Tárhely / hardver fülön.'}
-        $s.Status=if($script:cancelled){'CANCELLED'}elseif($storageFailure){'RUNNER_ERROR'}elseif($valid){'PASS'}else{'FAIL'}
+        $s.Status = if ($script:cancelled) { 'CANCELLED' }
+            elseif ($storageFailure) { 'RUNNER_ERROR' }
+            elseif (!$valid) { 'FAIL' }
+            elseif ($s.GpuExecution -eq 'SKIPPED') { 'SKIPPED' }
+            else { 'PASS' }
         if(!$valid -and $s.Exit -eq 0 -and !$s.Error){$s.Error="Validation gate failed ($($s.Kind))"; Add-Log "`r`nValidation gate failed ($($s.Kind)): inspect stdout before continuing.`r`n" $red}
         $script:proc.Dispose();$script:proc=$null;$script:active=$null; $progress.Value=[math]::Min($script:steps.Count,$progress.Maximum)
-        $col=$green;if(!$valid){$col=$red}; Add-Log "`r`n$($s.Status) | exit $($s.Exit) | $($s.Seconds)s`r`n" $col
+        Update-StudioOverview
+        $stepResult = if ($s.Status -eq 'PASS') { Get-CompletedValidationStatus @($s) } else { $s.Status }
+        $col = Get-ValidationStatusColor $stepResult
+        Add-Log "`r`n$stepResult | exit $($s.Exit) | $($s.Seconds)s`r`n" $col
         if($script:cancelled){Set-Idle 'CANCELLED'}
         elseif($storageFailure){Set-Idle 'RUNNER_ERROR'}
         elseif($script:diagnosticActive){if($s.DiagnosticTimeout){$s.Error='Diagnostic time limit reached.';$script:machine.CrashResult+=' | DIAGNOSTIC TIMEOUT';Set-Idle 'FAIL'}else{Complete-CrashStep $s $out $err $valid; Start-Next}}
@@ -525,11 +568,12 @@ function Start-StudioRun {
         $d3d=$auto -and !$isLocal -and ($autoProfile.SelectedIndex -eq 1)
         $agility=if($auto){$d3d}else{$ckAgility.Enabled -and $ckAgility.Checked}
         $depth=if($auto){$d3d}else{$ckDepth.Enabled -and $ckDepth.Checked}
-        $manualPackage='';$manualName='';$manualOne=$false
+        $manualPackage='';$manualName='';$manualOne=$false;$release=$false;$ignored=$false;$manualArgs=''
         if(!$auto -and $isWorkspace){
             $manualPackage=$manualCrate.Text.Trim();$manualName=$manualTest.Text.Trim();$manualOne=$manualSerial.Checked
-            if($manualPackage){if(!$ckTest.Checked){throw 'A célzott crate futtatásához jelöld be a teszteket.'};$null=Get-ManualTestArgs $manualPackage $manualName $manualOne ''}
-            elseif($manualName -or $manualOne){throw 'A pontos teszthez / soros módhoz crate név szükséges.'}
+            $release=$manualRelease.Checked;$ignored=$manualIgnored.Checked
+            if($manualPackage){if(!$ckTest.Checked){throw 'A célzott crate futtatásához jelöld be a teszteket.'};$manualArgs=Get-ManualTestArgs $manualPackage $manualName $manualOne '' $release $ignored}
+            elseif($manualName -or $manualOne -or $release -or $ignored){throw 'A pontos teszthez / soros módhoz crate név szükséges.'}
         }
         $script:expectedOrigin=$origin
         if (!$auto -and !$ckCheck.Checked -and !$ckTest.Checked -and !$ckClippy.Checked -and !($ckFull.Enabled -and $ckFull.Checked) -and !($ckBench.Checked -and $ckBench.Enabled) -and !($ckDepth.Checked -and $ckDepth.Enabled)) { throw 'Válassz legalább egy ellenőrzést.' }
@@ -555,7 +599,7 @@ function Start-StudioRun {
         }
         $confirm = "Futtatod a kiválasztott ellenőrzéseket? A projekt és a függőségei tetszőleges kódot futtathatnak a Windows-fiókod jogosultságaival. A Studio nem biztonsági sandbox. Csak megbízható forrást futtass.$([Environment]::NewLine)$([Environment]::NewLine)$($p.Name)$([Environment]::NewLine)$detail"
         if($auto){$confirm += [Environment]::NewLine+[Environment]::NewLine+'AUTO: '+((Get-AutoPlan $d3d) -join '; ')+' | Access violation esetén automatikus, korlátozott diagnosztikai újrateszt; az eredeti FAIL megmarad.'}
-        if($manualPackage){$confirm += [Environment]::NewLine+'MANUAL: '+(Get-ManualTestArgs $manualPackage $manualName $manualOne '')}
+        if($manualPackage){$confirm += [Environment]::NewLine+'MANUAL: '+$manualArgs}
         if ($agility) { $confirm += "`r`n`r`nAgility SDK: a kiválasztott revízió saját cargo xtask agility parancsa fut, hálózati letöltés lehetséges. Elkülönített buildcache." }
         $plannedTarget=Get-StudioTargetDirectory $isLocal $isWorkspace $p $agility
         $spacePath=if($plannedTarget){if([IO.Path]::IsPathRooted($plannedTarget)){$plannedTarget}else{Join-Path $workDir $plannedTarget}}else{Join-Path $workDir 'target'}
@@ -571,7 +615,8 @@ function Start-StudioRun {
         $script:runDir=Join-Path $reports ($script:started.ToString('yyyyMMdd-HHmmss-fff')+'-'+$runLabel)
         $null=New-Item -ItemType Directory -Path $runDir
         $script:machine=@{CPU='unknown';GPU='unknown';OS='unknown';Warp=($ckWarp.Checked -and !$isWorkspace);Repeat=1;WindowsBuild=$windowsBuild;AgilityRequested=$agility;AgilityStaged=$false;DepthRequested=$depth;AutoMode=$auto;AutoProfile=$(if($auto){[string]$autoProfile.SelectedItem}else{'MANUAL'})};if($d3d -or (!$auto -and $ckRepeat.Checked)){$script:machine.Repeat=3}; try{$script:machine.CPU=((Get-CimInstance Win32_Processor | ForEach-Object {$_.Name}) -join '; ');$script:machine.GPU=((Get-CimInstance Win32_VideoController | ForEach-Object {"$($_.Name) ($($_.DriverVersion))"}) -join '; ');$os=Get-CimInstance Win32_OperatingSystem;$script:machine.OS="$($os.Caption) $($os.Version) build $($os.BuildNumber)"}catch{}
-        $script:machine.ManualCrate=$manualPackage;$script:machine.ManualTest=$manualName;$script:machine.ManualSerial=$manualOne;$script:diagnosticActive=$false
+        $script:machine.ManualDepth = $manualPackage -ceq 'victory-gpu' -and $manualName -ceq $script:depthTestName
+        $script:machine.ManualCrate=$manualPackage;$script:machine.ManualTest=$manualName;$script:machine.ManualSerial=$manualOne;$script:machine.ManualRelease=$release;$script:machine.ManualIgnored=$ignored;$script:diagnosticActive=$false
         $script:machine.TargetDirectory=$spacePath; $script:machine.Storage=('cache={0:N1}; reports={1:N1}; temp={2:N1}; cargo={3:N1}' -f ($space.Cache/1GB),($space.Reports/1GB),($space.Temp/1GB),($space.Cargo/1GB)); $script:monitorSamples=0; $script:monitorPeak=@{}; $script:levelResults=@{}
         $script:queue.Clear(); $script:steps.Clear(); $terminal.Clear(); $reportBox.Clear(); $grid.Rows.Clear(); $chartTitle.Text='Az összehasonlításhoz válassz egy mérési sort.'; foreach($bar in $chartBars){$bar.Width=0}; foreach($v in $chartValues){$v.Text='-'}; $script:cancelled=$false
         $env:CARGO_TERM_COLOR='never';$env:RUST_BACKTRACE='1';$env:GIT_TERMINAL_PROMPT='0';$env:CARGO_TARGET_DIR=$plannedTarget
@@ -614,9 +659,8 @@ function Start-StudioRun {
                 }
             }
         }
-        $welcome.Visible=$false
         $updateButton.Enabled=$false;$openSource.Enabled=$false;$script:runState='RUNNING';$status.Text='Futtatás…';$status.ForeColor=$cyan;$progress.Maximum=$script:queue.Count;$progress.Value=0;$combo.Enabled=$false;$runButton.Enabled=$false;$stopButton.Enabled=$true;$copyButton.Enabled=$false;$copyFullButton.Enabled=$false
-        foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckFull,$ckWarp,$ckBench,$ckRepeat,$ckAgility,$ckDepth)){$c.Enabled=$false};Update-StorageDisplay;Update-ExecutionMode;$tabs.SelectedTab=$overviewTab;Add-Log "VIREX local validation | $($p.Name)`r`n$detail`r`n" $cyan;Start-Next
+        foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckFull,$ckWarp,$ckBench,$ckRepeat,$ckAgility,$ckDepth)){$c.Enabled=$false};Update-StorageDisplay;Update-ExecutionMode;$tabs.SelectedTab=if($auto){$labTab}else{$logTab};Add-Log "VIREX local validation | $($p.Name)`r`n$detail`r`n" $cyan;Start-Next
     } catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Unable to start')|Out-Null; if($script:runState -eq 'RUNNING'){Set-Idle 'FAIL'} }
 }
 $runButton.Add_Click({Start-StudioRun})
@@ -630,9 +674,10 @@ $form.Add_FormClosing({param($sender,$e)
     }
 })
 $form.Add_Shown({
+    $tabs.SelectedTab=$overviewTab
+    Update-StudioOverview
     Add-Log "VIREX Test Studio  $studioVersion$([Environment]::NewLine)" $cyan
     Add-Log "A futtatás után itt követheted a parancsokat és a kimenetüket.$([Environment]::NewLine)" $muted
-    $tabs.SelectedTab=$overviewTab;Update-Dashboard
     $combo.Select()
 })
 $timer.Start()
