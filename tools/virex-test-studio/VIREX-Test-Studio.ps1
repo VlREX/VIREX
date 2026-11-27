@@ -202,7 +202,7 @@ try { $ownsMutex=$script:mutex.WaitOne(0) } catch [System.Threading.AbandonedMut
 if (-not $ownsMutex) { [System.Windows.Forms.MessageBox]::Show('Test Studio is already running.') | Out-Null; exit }
 
 function Color([string]$hex) { [System.Drawing.ColorTranslator]::FromHtml($hex) }
-$bg=Color '#13242E'; $panel=Color '#1A333F'; $fg=Color '#E5EDF7'; $muted=Color '#A5B5CA'; $cyan=Color '#77E2C6'; $green=Color '#51D88A'; $red=Color '#FF8181'
+$bg=Color '#0D1823'; $panel=Color '#13222F'; $fg=Color '#E5EDF7'; $muted=Color '#A5B5CA'; $cyan=Color '#00DAC6'; $green=Color '#51D88A'; $red=Color '#FF8181'
 function Font([float]$size,[string]$family='Segoe UI',[bool]$bold=$false) {
     $style = [System.Drawing.FontStyle]::Regular; if ($bold) {$style=[System.Drawing.FontStyle]::Bold}
     New-Object System.Drawing.Font($family,$size,$style)
@@ -217,6 +217,17 @@ function Check($parent,[string]$value,[int]$x,[int]$y,[int]$w,[bool]$checked) {
     $c=New-Object System.Windows.Forms.CheckBox; $c.Text=$value; $c.Location=New-Object System.Drawing.Point($x,$y); $c.Size=New-Object System.Drawing.Size($w,27); $c.ForeColor=$fg; $c.Checked=$checked; $parent.Controls.Add($c); return $c
 }
 . (Join-Path $appDir 'Desktop.ps1')
+$script:overviewTab=New-Object Windows.Forms.TabPage
+$overviewTab.Text='Áttekintés';$overviewTab.BackColor=$bg
+$script:dashboard=New-Object VirexDashboard
+$dashboard.Dock='Fill';$overviewTab.Controls.Add($dashboard);$tabs.TabPages.Add($overviewTab)
+function Update-Dashboard {
+    $recent=@($script:steps | Select-Object -Last 5)
+    $done=@($script:steps | Where-Object {$_.Status -ne 'RUNNING'}).Count
+    $planned=if($script:runState -eq 'IDLE'){0}else{[math]::Max($progress.Maximum,$script:steps.Count)}
+    $current=if($script:active){[string]$script:active.Name}else{''}
+    $dashboard.SetRun($script:runState,$current,$done,$planned,[string[]]@($recent | ForEach-Object {$_.Name}),[string[]]@($recent | ForEach-Object {$_.Status}))
+}
 $logTab=New-Object System.Windows.Forms.TabPage; $logTab.Text='Napló'; $logTab.BackColor=$bg; $tabs.TabPages.Add($logTab)
 $script:terminal=New-Object System.Windows.Forms.RichTextBox; $terminal.Dock='Fill'; $terminal.ReadOnly=$true; $terminal.BackColor=Color '#0B1220'; $terminal.ForeColor=$fg; $terminal.Font=Font 10 'Consolas'; $terminal.WordWrap=$false; $terminal.DetectUrls=$false; $logTab.Controls.Add($terminal)
 $benchTab=New-Object System.Windows.Forms.TabPage; $benchTab.Text='Mérések'; $benchTab.BackColor=$bg; $tabs.TabPages.Add($benchTab)
@@ -406,6 +417,7 @@ function Start-Next {
 }
 $script:timer=New-Object System.Windows.Forms.Timer; $timer.Interval=400
 $timer.Add_Tick({
+    if($tabs.SelectedTab -eq $overviewTab){Update-Dashboard}
     if(!$script:proc){return}
     try {
         Update-Tail
@@ -604,7 +616,7 @@ function Start-StudioRun {
         }
         $welcome.Visible=$false
         $updateButton.Enabled=$false;$openSource.Enabled=$false;$script:runState='RUNNING';$status.Text='Futtatás…';$status.ForeColor=$cyan;$progress.Maximum=$script:queue.Count;$progress.Value=0;$combo.Enabled=$false;$runButton.Enabled=$false;$stopButton.Enabled=$true;$copyButton.Enabled=$false;$copyFullButton.Enabled=$false
-        foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckFull,$ckWarp,$ckBench,$ckRepeat,$ckAgility,$ckDepth)){$c.Enabled=$false};Update-StorageDisplay;Update-ExecutionMode;$tabs.SelectedTab=if($auto){$labTab}else{$logTab};Add-Log "VIREX local validation | $($p.Name)`r`n$detail`r`n" $cyan;Start-Next
+        foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckFull,$ckWarp,$ckBench,$ckRepeat,$ckAgility,$ckDepth)){$c.Enabled=$false};Update-StorageDisplay;Update-ExecutionMode;$tabs.SelectedTab=$overviewTab;Add-Log "VIREX local validation | $($p.Name)`r`n$detail`r`n" $cyan;Start-Next
     } catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Unable to start')|Out-Null; if($script:runState -eq 'RUNNING'){Set-Idle 'FAIL'} }
 }
 $runButton.Add_Click({Start-StudioRun})
@@ -620,6 +632,7 @@ $form.Add_FormClosing({param($sender,$e)
 $form.Add_Shown({
     Add-Log "VIREX Test Studio  $studioVersion$([Environment]::NewLine)" $cyan
     Add-Log "A futtatás után itt követheted a parancsokat és a kimenetüket.$([Environment]::NewLine)" $muted
+    $tabs.SelectedTab=$overviewTab;Update-Dashboard
     $combo.Select()
 })
 $timer.Start()

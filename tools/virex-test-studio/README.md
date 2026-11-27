@@ -1,8 +1,12 @@
-# VIREX Test Studio 2.2.1
+# VIREX Test Studio 2.3.0 – UI preview
 
 [**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-stable/VIREX-Test-Studio-2.2.1-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-stable)
 
 Magyar nyelvű Windows-alkalmazás Rust-projektek teszteléséhez. A kezdőképernyőn a **Belobug · VIctory AMD** cél van kiválasztva. A Studio lekéri az `a-publier` ágat, külön munkapéldányban futtatja a kiválasztott Cargo-ellenőrzéseket, és a riportba írja a ténylegesen tesztelt commitot. A saját fejlesztői példányodat a **Helyi projekt megnyitása** gombbal tudod tesztelni.
+
+## 2.3.0 – Command Center UI előnézet
+
+A meglévő WinForms tesztmotorra natív, dupla pufferelt C# műszerfal épül. A valós lépésállapot, befejezett/tervezett lépések, CPU/RAM/GPU minták és cache-meghajtó szabad helye látható. A GPU-validáció szándékosan NOT VERIFIED: egy Cargo PASS önmagában nem fizikai GPU-bizonyíték. A grafikonok hiányzó/stale mintáknál N/A-t jeleznek. Az előnézet nem a teljes 3.0 automatizálás; a meglévő stabil 2.2.1 kiadás változatlan.
 
 ## Indítás a forráscsomagból
 

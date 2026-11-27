@@ -25,7 +25,7 @@ $driver.Add_Tick({
         if ([DateTime]::UtcNow -gt $deadline) { throw 'Desktop test timeout.' }
         if ($script:phase -eq 0) {
             if (!$form.Visible) { return }
-            if ($combo.Items.Count -ne 21 -or $tabs.TabPages.Count -ne 7) { throw 'Missing target or workspace tab.' }
+            if ($combo.Items.Count -ne 21 -or $tabs.TabPages.Count -ne 8) { throw 'Missing target or workspace tab.' }
             if (!$updateButton.Enabled -or $ckBench.Enabled -or $combo.SelectedItem.Mode -ne 'belobug') { throw 'Startup controls unavailable.' }
             if (!$storageChoose.Enabled -or !$storageClean.Enabled -or !$storageMeasure.Enabled) { throw 'Storage controls missing.' }
             $rejected=$false; try { Assert-StorageSpace 4GB 2GB 2GB 2GB } catch { $rejected=$true }; if(!$rejected){throw 'Low disk guard failed.'}
@@ -65,12 +65,23 @@ $driver.Add_Tick({
             $ckTest.Checked=$true;$ckClippy.Checked=$true;$ckAgility.Checked=$false;$ckDepth.Checked=$false
             $depthOutput="test pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws ... ok`r`ntest result: ok. 1 passed; 0 failed; 0 ignored"
             if (!(Test-DepthResult $depthOutput '') -or (Test-DepthResult $depthOutput 'no PC dxc.exe; skipped') -or (Test-DepthResult $depthOutput 'no host depth bounds support; skipped') -or (Test-DepthResult 'test result: ok. 0 passed; 0 failed; 0 ignored' '')) { throw 'Depth result gate regression.' }
+            $tabs.SelectedTab=$overviewTab
+            Update-Dashboard
+            if($dashboard.RunState -ne 'IDLE' -or $dashboard.Completed -ne 0 -or $dashboard.Planned -ne 0 -or $dashboard.GpuEvidence -ne 'NOT VERIFIED'){throw 'Dashboard initial state incorrect.'}
+            $dashboard.SetRun('RUNNING','Workspace tests',7,12,[string[]]@('Cargo check','Workspace tests'),[string[]]@('PASS','RUNNING'))
+            if($dashboard.Completed -ne 7 -or $dashboard.Planned -ne 12 -or $dashboard.GpuEvidence -ne 'NOT VERIFIED'){throw 'Dashboard state binding failed.'}
+            $dashboard.Sample(54,42,6,1.71)
+            $dashboard.Sample(60,44,8,1.8)
             if ($PreviewPath) {
                 $bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height)
                 try { $form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height))); $bitmap.Save($PreviewPath,[Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
             }
+            Update-Dashboard
             $form.Size=New-Object Drawing.Size(800,590)
-            $tabs.SelectedIndex=3
+            $tabs.SelectedTab=$overviewTab
+            $testBitmap=New-Object Drawing.Bitmap($dashboard.Width,$dashboard.Height)
+            try{$dashboard.DrawToBitmap($testBitmap,(New-Object Drawing.Rectangle(0,0,$dashboard.Width,$dashboard.Height)))}finally{$testBitmap.Dispose()}
+            $tabs.SelectedTab=$aiTab
             if ($reviewPages.TabPages.Count -ne 2) { throw 'AI Review panels missing.' }
             $prompt=New-ReviewPrompt 'fixture evidence'
             if ($prompt -notmatch 'fixture evidence' -or $prompt -match 'BEGIN PEER REVIEW|Claude') { throw 'GPT-only review prompt invalid.' }
