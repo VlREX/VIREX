@@ -50,6 +50,14 @@ $driver.Add_Tick({
             $session=@{Id='0123456789abcdef0123456789abcdef';Round=1;Origin=$batchParsed[0].Target.Origin;LastSha=''}
             $envelope=ConvertTo-Json -Depth 8 -Compress -InputObject @{virex_batch=1;session=$session.Id;round=1;profiles=@((ConvertFrom-Json $batchProfile))}
             if(@(ConvertFrom-AutonomousPlan $envelope $session).Count -ne 1){throw 'Autonomous plan failed.'}
+            $mailbox=Get-AutonomousMailboxUrl $session
+            if($mailbox -cne 'https://raw.githubusercontent.com/VlREX/VIREX/studio-handoff/handoff/0123456789abcdef0123456789abcdef/r1.json'){throw 'Unexpected mailbox route.'}
+            foreach($badSession in @(@{Id='../other';Round=1},@{Id=$session.Id;Round=5})){
+                $rejected=$false;try{Get-AutonomousMailboxUrl $badSession|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Unsafe mailbox route accepted.'}
+            }
+            $oldSha=$session.LastSha;$session.LastSha=$batchParsed[0].Target.ExpectedSha
+            $rejected=$false;try{ConvertFrom-AutonomousPlan $envelope $session|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Replayed commit accepted.'}
+            $session.LastSha=$oldSha
             foreach($badEnvelope in @($envelope.Replace($session.Id,('f'*32)), $envelope.Replace('VlREX/VIREX','other/repo'))){$rejected=$false;try{ConvertFrom-AutonomousPlan $badEnvelope $session|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Unapproved autonomous plan accepted.'}}
             $bridgeFixture=Join-Path $fixture 'bridge'
             $bridgeFiles=Join-Path $bridgeFixture 'datasources'
