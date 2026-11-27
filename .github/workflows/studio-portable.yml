@@ -38,7 +38,7 @@ jobs:
       - name: Check release version and generate the artwork
         run: |
           $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
-          if ($version -notmatch '^\d+\.\d+\.\d+ {
+          if ($version -notmatch '^\d+\.\d+\.\d+$' -or ($env:GITHUB_REF_NAME -cne 'main' -and $env:GITHUB_REF_NAME -cne "release/studio-$version")) {
               throw 'The release branch must match the Studio version.'
           }
           python -m pip install --disable-pip-version-check --only-binary=:all: Pillow==12.3.0
@@ -99,109 +99,6 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/heads/release/studio-')
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: studio-windows
-          path: package
-      - name: Publish and verify the Windows ZIP
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          ASSET: ${{ needs.build.outputs.asset }}
-          EXPECTED: ${{ needs.build.outputs.sha256 }}
-          SETUP: ${{ needs.build.outputs.setup }}
-          SETUP_HASH: ${{ needs.build.outputs.setup_sha256 }}
-        run: |
-          set -euo pipefail
-          zip="$(find package -type f -name "$ASSET" -print -quit)"
-          setup="$(find package -type f -name "$SETUP" -print -quit)"
-          test -n "$zip" && test -n "$setup"
-          echo "$EXPECTED  $zip" | sha256sum --check --strict
-          echo "$SETUP_HASH  $setup" | sha256sum --check --strict
-          tag=studio-stable
-          if ! gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
-            gh release create "$tag" --repo "$GH_REPO" --target "$GITHUB_SHA" --latest=false --title "VIREX Test Studio – Windows" --notes "Windows portable ZIP and versioned installer."
-          fi
-          # Never replace existing versioned assets. Verify any pre-existing bytes first.
-          mkdir verified
-          for name in "$ASSET" "$SETUP"; do
-            if gh release view "$tag" --repo "$GH_REPO" --json assets --jq '.assets[].name' | grep -Fxq -- "$name"; then
-              gh release download "$tag" --repo "$GH_REPO" --pattern "$name" --dir verified
-              if [[ "$name" == "$ASSET" ]]; then hash="$EXPECTED"; else hash="$SETUP_HASH"; fi
-              echo "$hash  verified/$name" | sha256sum --check --strict
-            fi
-          done
-          # Upload the installer last so existing clients only see it after all build gates pass.
-          for file in "$zip" "$setup"; do
-            name="$(basename "$file")"
-            if [[ ! -f "verified/$name" ]]; then
-              gh release upload "$tag" "$file" --repo "$GH_REPO"
-              gh release download "$tag" --repo "$GH_REPO" --pattern "$name" --dir verified
-            fi
-          done
-          echo "$EXPECTED  verified/$ASSET" | sha256sum --check --strict
-          echo "$SETUP_HASH  verified/$SETUP" | sha256sum --check --strict
- -or ($env:GITHUB_REF_NAME -cne 'main' -and $env:GITHUB_REF_NAME -cne "release/studio-$version")) {
-              throw 'The release branch must match the Studio version.'
-          }
-          python -m pip install --disable-pip-version-check --only-binary=:all: Pillow==12.3.0
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          python packaging/make_icons.py
-      - name: Check updater and review bridge
-        run: |
-          .\tests\Update.Tests.ps1
-          python -m unittest -v test_ai_review
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Desktop and local Cargo integration
-        run: |
-          powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -STA -File .\tests\Desktop.Tests.ps1 -WithCargo
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Ensure Inno Setup compiler is installed
-        run: |
-          $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-          $standard = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
-          if (!$compiler -and !(Test-Path -LiteralPath $standard)) {
-              choco install innosetup --yes --no-progress
-              if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          }
-      - name: Package the portable Windows release
-        id: package
-        run: |
-          $hash = .\packaging\Build-Portable.ps1
-          $asset = Split-Path -Leaf $hash.Path
-          $installer = .\packaging\Build.ps1
-          $installerName = Split-Path -Leaf $installer.Path
-          @("asset=$asset", "sha256=$($hash.Hash.ToLowerInvariant())", "setup=$installerName", "setup_sha256=$($installer.Hash.ToLowerInvariant())") | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-      - name: Verify clean Windows installation and uninstall
-        run: |
-          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
-          $setup = (Resolve-Path "artifacts\installer\VIREX-Test-Studio-$version-Setup.exe").Path
-          $destination = Join-Path $env:RUNNER_TEMP ('virex-install-' + [guid]::NewGuid())
-          $install = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/DIR="' + $destination + '"')) -Wait -PassThru
-          if ($install.ExitCode -ne 0) { throw "Installer failed: $($install.ExitCode)" }
-          if (!(Test-Path -LiteralPath (Join-Path $destination 'VIREX-Test-Studio.exe'))) { throw 'Launcher not installed.' }
-          if ((Get-Content -LiteralPath (Join-Path $destination 'VERSION') -Raw).Trim() -ne $version) { throw 'Installed version mismatch.' }
-          $uninstaller = Join-Path $destination 'unins000.exe'
-          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait -PassThru
-          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstall.ExitCode)" }
-          if (Test-Path -LiteralPath (Join-Path $destination 'VIREX-Test-Studio.exe')) { throw 'Uninstaller left launcher behind.' }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: studio-windows
-          path: |
-            tools/virex-test-studio/artifacts/portable/*.zip
-            tools/virex-test-studio/artifacts/installer/*-Setup.exe
-          if-no-files-found: error
-          retention-days: 7
-
-  publish:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 5
