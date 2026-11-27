@@ -483,6 +483,7 @@ function Apply-StudioProfile([string]$json) {
     $ckFull.Checked=$false; $ckBench.Checked=$false; $ckWarp.Checked=$false
     $manualCrate.Text=if($d.v -in @(2,3)){$d.crate}else{''};$manualTest.Text=if($d.v -in @(2,3)){$d.test}else{''};$manualSerial.Checked=($d.v -in @(2,3) -and $d.threads -eq 1)
     $manualRelease.Checked=($d.v -eq 3 -and $d.release); $manualIgnored.Checked=($d.v -eq 3 -and $d.ignored)
+    $script:loadedProfileText=$json
     $profileStatus.Text='Profil betöltve. Ellenőrizd a pipákat, majd Futtatás. Semmi nem indult el.'
 }
 function Get-AutoPlan([bool]$d3d) {
@@ -517,7 +518,12 @@ $null=New-Caption $labLayout 'GPT test profile · MANUAL' 12 $fg $true
 $profileBox=New-Object Windows.Forms.TextBox
 $profileBox.Multiline=$true;$profileBox.ScrollBars='Vertical';$profileBox.Width=400;$profileBox.Height=115;$profileBox.MaxLength=4096
 $profileBox.Font=Font 9 'Consolas';$labLayout.Controls.Add($profileBox)
-$profileLoad=New-Action $labLayout 'Profil betöltése' '#245B58' 185
+$profileActions=New-Stack $labLayout 'LeftToRight' $false
+$profileActions.AutoSize=$true;$profileActions.AutoSizeMode='GrowAndShrink'
+$profileLoad=New-Action $profileActions 'Profil betöltése' '#245B58' 185
+$profileClear=New-Action $profileActions 'Törlés' '#493A46' 100
+$script:loadedProfileText=''
+$tip.SetToolTip($profileClear,'Csak a JSON szöveget törli, a beállításokat nem.')
 $profileStatus=New-Caption $labLayout 'JSON v1/v2/v3 · csak ismert mezők · nem futtat parancsot.' 9 $muted
 $profileStatus.MaximumSize=New-Object Drawing.Size(400,0)
 $null=New-Caption $labLayout 'MANUAL · célzott lib teszt (opcionális)' 12 $fg $true
@@ -530,7 +536,17 @@ $null=New-Caption $labLayout 'Pontos tesztnév; üres = teljes crate lib' 9 $mut
 $manualRelease=Check $labLayout 'Release build (optimalizált)' 0 0 300 $false
 $manualIgnored=Check $labLayout 'Csak az ignored jelölésű pontos teszt' 0 0 330 $false
 $manualSerial=Check $labLayout 'Soros futtatás (1 tesztszál)' 0 0 300 $false
+function Clear-StudioProfile([string]$message) {
+    $profileBox.Clear()
+    $script:loadedProfileText=''
+    $profileStatus.Text=$message
+}
 $profileLoad.Add_Click({try{Apply-StudioProfile $profileBox.Text}catch{$profileStatus.Text=$_.Exception.Message}})
+$profileClear.Add_Click({
+    if (Test-StorageBusy) { return }
+    Clear-StudioProfile 'Profilmező törölve. A betöltött beállítások megmaradtak.'
+    $profileBox.Focus() | Out-Null
+})
 function Update-LabProgress([int]$runningLevel=-1) {
     $labPlan.BeginUpdate()
     try {
@@ -553,6 +569,7 @@ function Update-ExecutionMode {
     if(Test-LocalTarget){$autoProfile.SelectedIndex=0}
     $profileBox.Enabled=!$auto -and !$busy
     $profileLoad.Enabled=$profileBox.Enabled
+    $profileClear.Enabled=$profileBox.Enabled
     foreach($c in @($manualCrate,$manualTest,$manualSerial,$manualRelease,$manualIgnored)){$c.Enabled=!$auto -and !$busy -and (Test-WorkspaceTarget)}
     if($auto){foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckRepeat,$ckAgility,$ckDepth,$ckFull,$ckWarp,$ckBench)){$c.Enabled=$false}}
     $labPlan.Items.Clear()

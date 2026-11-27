@@ -564,6 +564,12 @@ $stopButton.Add_Click({Stop-Run})
 function Start-StudioRun {
     if (Test-StorageBusy) { return }
     try {
+        # A pasted MANUAL profile may be run directly; retain already loaded
+        # settings so the user can adjust the checkboxes before confirming.
+        $consumeProfile=!$modeSwitch.Checked -and ![string]::IsNullOrWhiteSpace($profileBox.Text)
+        if ($consumeProfile -and $profileBox.Text -cne $script:loadedProfileText) {
+            Apply-StudioProfile $profileBox.Text
+        }
         $isLocal = Test-LocalTarget
         $isWorkspace = Test-WorkspaceTarget
         $auto=$modeSwitch.Checked -and $isWorkspace
@@ -663,6 +669,9 @@ function Start-StudioRun {
         }
         $updateButton.Enabled=$false;$openSource.Enabled=$false;$script:runState='RUNNING';$status.Text='Futtatás…';$status.ForeColor=$cyan;$progress.Maximum=$script:queue.Count;$progress.Value=0;$combo.Enabled=$false;$runButton.Enabled=$false;$stopButton.Enabled=$true;$copyButton.Enabled=$false;$copyFullButton.Enabled=$false
         foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckFull,$ckWarp,$ckBench,$ckRepeat,$ckAgility,$ckDepth)){$c.Enabled=$false};Update-StorageDisplay;Update-ExecutionMode;$tabs.SelectedTab=$overviewTab;Add-Log "VIREX local validation | $($p.Name)`r`n$detail`r`n" $cyan;Start-Next
+        if ($consumeProfile -and $script:runState -eq 'RUNNING' -and $script:proc) {
+            Clear-StudioProfile 'Futtatás elindult. A következő profil beilleszthető a teszt után.'
+        }
     } catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Unable to start')|Out-Null; if($script:runState -eq 'RUNNING'){Set-Idle 'FAIL'} }
 }
 $runButton.Add_Click({Start-StudioRun})

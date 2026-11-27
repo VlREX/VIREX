@@ -20,6 +20,11 @@ try {
     $previewAsset.browser_download_url = 'https://github.com/VlREX/VIREX/releases/download/studio-preview/' + $previewAsset.name
     $previewRelease = @{ tag_name='studio-preview'; draft=$false; prerelease=$true; assets=@($asset,$previewAsset) }
     Assert-True ((Select-StudioUpdate $previewRelease '3.0.0' -Preview).Name -eq $previewAsset.name) 'Preview update asset selection failed.'
+    $hotfixAsset=$previewAsset.Clone()
+    $hotfixAsset.name='VIREX-Test-Studio-3.0.2-Preview-Setup.exe'
+    $hotfixAsset.browser_download_url='https://github.com/VlREX/VIREX/releases/download/studio-preview/'+$hotfixAsset.name
+    $previewRelease.assets=@($asset,$previewAsset,$hotfixAsset)
+    Assert-True ((Select-StudioUpdate $previewRelease '3.0.1' -Preview).Name -eq $hotfixAsset.name) '3.0.2 hotfix not offered.'
     Assert-Throws { Select-StudioUpdate $previewRelease '2.0.0' } 'Stable channel accepted a preview release.'
     Assert-Throws { Select-StudioUpdate $release '2.0.0' -Preview } 'Preview channel accepted a stable release.'
     foreach ($current in @('2.10.0','3.0.0')) { Assert-True ((Select-StudioUpdate $release $current).State -eq 'current') 'Equal or older offer.' }

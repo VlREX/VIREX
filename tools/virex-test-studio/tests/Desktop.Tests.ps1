@@ -45,7 +45,17 @@ $driver.Add_Tick({
             if ((Get-StudioTargetDirectory $true $true $belobugTarget $false) -ne $inheritedTargetDir) {throw 'Local target changed.'}
             if (!$ckAgility.Enabled -or !$ckDepth.Enabled -or $ckAgility.Checked -or $ckDepth.Checked) { throw 'Agility and depth options must be opt-in.' }
             $profileJson='{"v":1,"target":"https://github.com/Belobug/VIctory-Belobug-AMD/pull/7","check":true,"workspace":false,"clippy":false,"repeat":3,"agility":true,"depth":true}'
-            Apply-StudioProfile $profileJson
+            $tabs.SelectedTab=$labTab
+            $profileBox.Text=$profileJson
+            $profileLoad.PerformClick()
+            if($profileBox.Text -cne $profileJson){throw 'Loading prematurely cleared the profile.'}
+            $profileClear.PerformClick()
+            if($profileBox.Text -or $script:loadedProfileText){throw 'Clear profile did not empty the editor.'}
+            $profileBox.Text='invalid JSON'
+            $profileLoad.PerformClick()
+            if($profileBox.Text -cne 'invalid JSON'){throw 'Invalid profile was lost.'}
+            $profileClear.PerformClick()
+            $tabs.SelectedTab=$overviewTab
             if($combo.SelectedItem.Mode -ne 'revision' -or !$ckCheck.Checked -or $ckTest.Checked -or !$ckDepth.Checked -or !$ckRepeat.Checked -or !$ckAgility.Checked -or $runState -ne 'IDLE'){throw 'Manual profile application failed.'}
             foreach($invalid in @($profileJson.Replace('"repeat":3','"repeat":2'),$profileJson.Replace('"check":true','"check":"true"'),$profileJson.Replace('"v":1','"v":1,"command":"cmd.exe"'))){
                 $rejected=$false;try{ConvertFrom-StudioProfile $invalid|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Invalid profile accepted.'}
@@ -85,9 +95,9 @@ $driver.Add_Tick({
             if((Get-CrashExecutable $exeLog) -ne 'studio_fixture-12345678abcdef90.exe'){throw 'Crash executable parser failed.'}
             if((Get-SerialCrashCandidate ('test a::ok ... ok'+[Environment]::NewLine+'test b::suspect ... ')) -ne 'b::suspect' -or (Get-SerialCrashCandidate 'test b::ok ... ok')){throw 'Serial candidate parser failed.'}
             $modeSwitch.Checked=$true
-            if($ckCheck.Enabled -or $profileLoad.Enabled -or !$modeSwitch.Checked){throw 'AUTO did not lock manual inputs.'}
+            if($ckCheck.Enabled -or $profileLoad.Enabled -or $profileClear.Enabled -or !$modeSwitch.Checked){throw 'AUTO did not lock manual inputs.'}
             $modeSwitch.Checked=$false
-            if(!$ckCheck.Enabled -or !$profileLoad.Enabled){throw 'MANUAL controls not restored.'}
+            if(!$ckCheck.Enabled -or !$profileLoad.Enabled -or !$profileClear.Enabled){throw 'MANUAL controls not restored.'}
             $combo.SelectedIndex=0
             $ckTest.Checked=$true;$ckClippy.Checked=$true;$ckAgility.Checked=$false;$ckDepth.Checked=$false
             $nl = [Environment]::NewLine
@@ -300,12 +310,16 @@ fn main() {
                 throw 'Dirty checkout was not protected.'
             }
             Remove-Item -LiteralPath (Join-Path $workDir 'local-change.txt')
-            $tabs.SelectedTab=$prTab
-            $prAddress.Text='https://github.com/Belobug/VIctory-Belobug-AMD/pull/7'
-            $prSelect.PerformClick()
+            $tabs.SelectedTab=$labTab
+            $profileBox.Text='{"v":1,"target":"https://github.com/Belobug/VIctory-Belobug-AMD/pull/7","check":true,"workspace":true,"clippy":false,"repeat":1,"agility":false,"depth":false}'
+            $script:fixtureConfirm=Get-Item Function:Confirm-StudioRun | Select-Object -ExpandProperty ScriptBlock
+            function script:Confirm-StudioRun([string]$message) { return $false }
+            $runButton.PerformClick()
+            if (!$profileBox.Text -or $runState -eq 'RUNNING') { throw 'Cancelled run lost its profile.' }
+            Set-Item -Path Function:script:Confirm-StudioRun -Value $script:fixtureConfirm
             $script:phase=31
             $runButton.PerformClick()
-            if ($runState -ne 'RUNNING') { throw 'PR run did not start.' }
+            if ($runState -ne 'RUNNING' -or $profileBox.Text -or $profileClear.Enabled) { throw 'PR profile run did not start and clear correctly.' }
         } elseif ($script:phase -eq 31 -and $script:runState -ne 'RUNNING') {
             $report=[IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))
             if ($runState -ne 'PASS' -or !$report.Contains($prSha) -or !$report.Contains('refs/pull/7/head') -or !$report.Contains('Source URL: https://github.com/Belobug/VIctory-Belobug-AMD/pull/7')) { throw $report }
