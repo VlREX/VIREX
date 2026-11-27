@@ -38,6 +38,12 @@ $driver.Add_Tick({
             if (!$updateButton.Enabled -or $ckBench.Enabled -or $combo.SelectedItem.Mode -ne 'belobug') { throw 'Startup controls unavailable.' }
             if (!$storageChoose.Enabled -or !$storageClean.Enabled -or !$storageMeasure.Enabled) { throw 'Storage controls missing.' }
             if($bridgeEnabled.Checked -or $script:bridgeConfig){throw 'AutoBridge must default OFF.'}
+            $batchProfile='{"v":3,"target":"https://github.com/VlREX/VIREX/commit/0123456789abcdef0123456789abcdef01234567","check":true,"workspace":true,"clippy":false,"repeat":1,"agility":false,"depth":false,"crate":"victory-pipeline","test":"","threads":0,"release":false,"ignored":false}'
+            $batchParsed=@(ConvertFrom-StudioBatch ('['+$batchProfile+','+$batchProfile+']'))
+            if($batchParsed.Count -ne 2 -or $batchParsed[0].Target.ExpectedSha -ne '0123456789abcdef0123456789abcdef01234567'){throw 'Batch profile parsing failed.'}
+            foreach($invalid in @('[]',$batchProfile,('['+$batchProfile.Replace('"check":true','"command":"cmd.exe"')+']'))){
+                $rejected=$false;try{ConvertFrom-StudioBatch $invalid|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Invalid batch accepted.'}
+            }
             $bridgeFixture=Join-Path $fixture 'bridge'
             $bridgeFiles=Join-Path $bridgeFixture 'datasources'
             $null=New-Item -ItemType Directory -Path $bridgeFiles -Force

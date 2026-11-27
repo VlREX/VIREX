@@ -414,7 +414,10 @@ function Set-Idle([string]$state) {
     $labState.Text="$($script:machine.AutoProfile) | $state"
     if($script:machine.AutoMode -and !$script:closeAfterStop){$tabs.SelectedTab=$summaryTab}
     $copyButton.Enabled=$false; $copyFullButton.Enabled=$false
-    try {Save-Report; $copyButton.Enabled=$true; $copyFullButton.Enabled=$true; if (!$script:closeAfterStop) { Publish-AutoBridgeReport (Join-Path $runDir 'REPORT.txt') $state }} catch {Add-Log ("`r`nREPORT ERROR: "+$_.Exception.Message+"`r`n") $red; if($reportBox.Text){$copyButton.Enabled=$true} }; Update-StorageDisplay
+    $savedReport=$false
+    try {Save-Report; $savedReport=$true; $copyButton.Enabled=$true; $copyFullButton.Enabled=$true; if (!$script:batchActive -and !$script:closeAfterStop) { Publish-AutoBridgeReport (Join-Path $runDir 'REPORT.txt') $state }} catch {Add-Log ("`r`nREPORT ERROR: "+$_.Exception.Message+"`r`n") $red; if($reportBox.Text){$copyButton.Enabled=$true} }
+    if($script:batchActive){Complete-BatchRun $state $savedReport}
+    Update-StorageDisplay
     $script:diagnosticActive=$false
     Add-Log "`r`n=== $state ===`r`n" $status.ForeColor
     if($script:closeAfterStop -and !$script:unsafeState){$script:closeAfterStop=$false;$form.Close()}
@@ -557,13 +560,15 @@ function Stop-Run {
 . (Join-Path $appDir 'Repository.ps1')
 . (Join-Path $appDir 'Targets.ps1')
 . (Join-Path $appDir 'AutoBridge.ps1')
+. (Join-Path $appDir 'BatchQueue.ps1')
 Initialize-StudioNavigation
 $folderButton.Add_Click({$dir=$reports;if($script:runDir){$dir=$script:runDir}; Start-Process explorer.exe -ArgumentList ('"'+$dir+'"')})
 $copyButton.Add_Click({try{$reportPath=Join-Path $runDir 'REPORT.txt'; $content=if(Test-Path -LiteralPath $reportPath -PathType Leaf){$saved=[IO.File]::ReadAllText($reportPath);if($saved){$saved}else{$reportBox.Text}}else{$reportBox.Text};[System.Windows.Forms.Clipboard]::SetText($content); $foot.Text='A riport a vágólapra került.'}catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}})
 $copyFullButton.Add_Click({try{[System.Windows.Forms.Clipboard]::SetText([System.IO.File]::ReadAllText((Join-Path $runDir 'FULL-LOG.txt')));$foot.Text='A teljes napló a vágólapra került.'}catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}})
 $stopButton.Add_Click({Stop-Run})
 function Start-StudioRun {
-    if (Test-StorageBusy) { return }
+    param([switch]$BatchApproved)
+    if ((Test-StorageBusy) -or ($script:batchActive -and !$BatchApproved)) { return }
     try {
         # A pasted MANUAL profile may be run directly; retain already loaded
         # settings so the user can adjust the checkboxes before confirming.
@@ -615,7 +620,7 @@ function Start-StudioRun {
         $space=Get-StorageInfo $spacePath
         $confirm += "`r`n`r`nCargo cache: $spacePath`r`nSzabad hely: $([math]::Round($space.Cache/1GB,1)) GiB."
         if($space.Cache -lt 20GB){$confirm += "`r`nFigyelem: 20 GiB alatt a nagy Rust-build elfogyaszthatja a tárhelyet. Ez csak előzetes ellenőrzés."}
-        if (!(Confirm-StudioRun $confirm)) { return }
+        if (!$BatchApproved -and !(Confirm-StudioRun $confirm)) { return }
         $cargo=Tool-Path 'cargo.exe'
         if (!$isLocal) { $git=Tool-Path 'git.exe' }
         if (!$isWorkspace) { $rust=Tool-Path 'rustc.exe' }
@@ -677,6 +682,7 @@ function Start-StudioRun {
 }
 $runButton.Add_Click({Start-StudioRun})
 $form.Add_FormClosing({param($sender,$e)
+    if($script:batchActive -and $script:runState -ne 'RUNNING') { Finish-StudioBatch 'CANCELLED' }
     if($script:cacheWorker){$e.Cancel=$true; $foot.Text='A cache művelet még fut.'; return}
     if($script:runState -eq 'RUNNING'){
         $e.Cancel=$true
@@ -693,7 +699,7 @@ $form.Add_Shown({
     $combo.Select()
 })
 $timer.Start()
-try{[void]$form.ShowDialog()}finally{$timer.Stop();$timer.Dispose();$bridgeTimer.Stop();$bridgeTimer.Dispose();$storageTimer.Stop();$storageTimer.Dispose();if($monitorWorker){$null=$monitorWorker.BeginStop($null,$null)};$updateTimer.Stop();$updateTimer.Dispose();if ($updateWorker) { $null=$updateWorker.BeginStop($null,$null) };if($script:proc){try{$script:proc.Dispose()}catch{}};$script:mutex.ReleaseMutex();$script:mutex.Dispose();$form.Dispose()}
+try{[void]$form.ShowDialog()}finally{$timer.Stop();$timer.Dispose();$batchTimer.Stop();$batchTimer.Dispose();$bridgeTimer.Stop();$bridgeTimer.Dispose();$storageTimer.Stop();$storageTimer.Dispose();if($monitorWorker){$null=$monitorWorker.BeginStop($null,$null)};$updateTimer.Stop();$updateTimer.Dispose();if ($updateWorker) { $null=$updateWorker.BeginStop($null,$null) };if($script:proc){try{$script:proc.Dispose()}catch{}};$script:mutex.ReleaseMutex();$script:mutex.Dispose();$form.Dispose()}
 
 if ($script:pendingSetup) {
     try { Start-VerifiedSetup $script:pendingSetup $script:updateOffer.Hash }
