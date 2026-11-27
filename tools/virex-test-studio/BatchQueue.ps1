@@ -8,7 +8,8 @@ $script:batchCurrent=$false
 $script:batchStop=$false
 function ConvertFrom-StudioBatch([string]$json){
     if([string]::IsNullOrWhiteSpace($json) -or $json.Length -gt 60000 -or !$json.TrimStart().StartsWith('[')){throw 'JSON array required (1-12 profiles).'}
-    $items=@(ConvertFrom-Json -InputObject $json -ErrorAction Stop)
+    $decoded=ConvertFrom-Json -InputObject $json -ErrorAction Stop
+    $items=@($decoded)
     if($items.Count -lt 1 -or $items.Count -gt 12){throw '1-12 profiles required.'}
     $validated=@()
     $origin=$null
@@ -60,9 +61,9 @@ function Complete-BatchRun([string]$state,[bool]$saved){
     try{
         Add-BatchReport ('===== PROFILE '+($script:batchIndex+1)+' | '+$state+' =====')
         Add-BatchReport $script:batchItems[$script:batchIndex].Json
+        $script:batchIndex++
         if(!$saved){throw 'Individual report could not be saved.'}
         Add-BatchReport ([IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt')))
-        $script:batchIndex++
         if($state -ne 'PASS' -or $script:batchStop -or $script:closeAfterStop){
             Finish-StudioBatch $(if($state -ne 'PASS'){$state}else{'CANCELLED'})
         }elseif($script:batchIndex -ge $script:batchItems.Count){
