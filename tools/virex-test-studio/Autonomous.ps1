@@ -1,6 +1,7 @@
 ﻿# Bounded opt-in prototype. No arbitrary commands, no automatic merge.
 $script:autoSession=$null
 $script:autoJob=$null
+$script:autoFetch=$null
 $null=New-Caption $labLayout 'AUTONOMOUS · CHAT START' 13 $cyan $true
 $autoRepo=New-Object Windows.Forms.TextBox
 $autoRepo.Width=400;$autoRepo.Text='VlREX/VIctory-Belobug-AMD';$labLayout.Controls.Add($autoRepo)
@@ -24,7 +25,33 @@ function ConvertFrom-AutonomousPlan([string]$json,$session){
     if($session.LastSha -and $items[0].Target.ExpectedSha -ceq $session.LastSha){throw 'Repeated commit rejected.'}
     return $items
 }
+function Get-AutonomousMailboxUrl($session){
+    if($session.Id -cnotmatch '^[0-9a-f]{32}$' -or $session.Round -notin (1..4)){throw 'Invalid mailbox session.'}
+    return ('https://raw.githubusercontent.com/VlREX/VIREX/studio-handoff/handoff/'+$session.Id+'/r'+$session.Round+'.json')
+}
+function Stop-AutonomousFetch {
+    if($script:autoFetch){
+        $fetch=$script:autoFetch;$script:autoFetch=$null
+        $fetch.Client.Dispose()
+    }
+}
+function Start-AutonomousFetch($session){
+    Add-Type -AssemblyName System.Net.Http
+    $handler=New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect=$false
+    $client=New-Object System.Net.Http.HttpClient -ArgumentList $handler
+    try{
+        $client.Timeout=[TimeSpan]::FromSeconds(15)
+        $client.MaxResponseContentBufferSize=65536
+        $url=(Get-AutonomousMailboxUrl $session)+'?poll='+[DateTime]::UtcNow.Ticks
+        $client.DefaultRequestHeaders.CacheControl=New-Object System.Net.Http.Headers.CacheControlHeaderValue
+        $client.DefaultRequestHeaders.CacheControl.NoCache=$true
+        $task=$client.GetAsync($url)
+        $script:autoFetch=@{Client=$client;Task=$task;Session=$session.Id;Round=$session.Round}
+    }catch{$client.Dispose();throw}
+}
 function Stop-AutonomousSession([string]$reason){
+    Stop-AutonomousFetch
     $script:autoSession=$null
     $script:autoJob=$null
     $autoArm.Enabled=$true;$autoRepo.Enabled=$true;$autoStop.Enabled=$false
@@ -32,7 +59,7 @@ function Stop-AutonomousSession([string]$reason){
 }
 function Start-AutonomousJob([string]$kind,[string]$reportPath=''){
     $s=$script:autoSession
-    if(!$s -or $script:autoJob){throw 'No available autonomous session.'}
+    if(!$s -or $script:autoJob -or $kind -cne 'REPORT'){throw 'No available autonomous report session.'}
     $id=[guid]::NewGuid().ToString('N')
     $name='virex-auto-'+$id+'.csv'
     $payload=@{kind=$kind;session=$s.Id;round=$s.Round;origin=$s.Origin}
@@ -74,11 +101,22 @@ $autoArm.Add_Click({
         $pf86=[Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
         $chrome=@("$env:ProgramFiles\Google\Chrome\Application\chrome.exe","$pf86\Google\Chrome\Application\chrome.exe","$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe")|Where-Object{Test-Path -LiteralPath $_ -PathType Leaf}|Select-Object -First 1
         if(!$chrome){throw 'Chrome nem található.'}
-        if(!(Confirm-StudioRun ('2 órára engedélyezed a megadott saját repo commitjainak automatikus Cargo-futtatását (max. 4 kör, körönként 12 profil) és a riportok elküldését a mentett chatbe? A repo kódja a Windows-fiókod teljes jogosultságával fut; ez NEM sandbox. Csak megbízható saját kódhoz. STOP megszakítja a munkamenetet.'+[Environment]::NewLine+$target.Origin+[Environment]::NewLine+$cfg.url))){return}
+        if(!(Confirm-StudioRun ('2 órára engedélyezed a megadott saját repo commitjainak automatikus Cargo-futtatását (max. 4 kör, körönként 12 profil) a VlREX/VIREX studio-handoff ágában tárolt teszttervek alapján, és a riportok elküldését a mentett chatbe? A teszttervek nyilvánosak; a riportok nem kerülnek GitHubra. A repo kódja a Windows-fiókod teljes jogosultságával fut; ez NEM sandbox. Csak megbízható saját kódhoz. STOP megszakítja a munkamenetet.'+[Environment]::NewLine+$target.Origin+[Environment]::NewLine+$cfg.url))){return}
+        $macroDir=Join-Path (Split-Path -Parent ($cfg.data.TrimEnd('\'))) 'macros'
+        if(!(Test-Path -LiteralPath $macroDir -PathType Container)){throw 'Ui.Vision macros mappa nem található.'}
+        $source=Join-Path $appDir 'VIREX_Autonomous.js'
+        $dest=Join-Path $macroDir 'VIREX_Autonomous.js'
+        if(!(Test-Path -LiteralPath $source -PathType Leaf)){throw 'A csomagból hiányzik a riport makró.'}
+        if([IO.Path]::GetFullPath($source) -ine [IO.Path]::GetFullPath($dest)){
+            if(Test-Path -LiteralPath $dest -PathType Leaf){
+                Copy-Item -LiteralPath $dest -Destination ($dest+'.bak') -Force -ErrorAction Stop
+            }
+            Copy-Item -LiteralPath $source -Destination $dest -Force -ErrorAction Stop
+        }
         $id=[guid]::NewGuid().ToString('N')
         $script:autoSession=@{Id=$id;Round=1;Origin=$target.Origin;Config=$cfg;Chrome=$chrome;Deadline=[DateTime]::UtcNow.AddHours(2);Next=[DateTime]::UtcNow;Phase='WAIT';LastSha='';State=''}
         $autoArm.Enabled=$false;$autoRepo.Enabled=$false;$autoStop.Enabled=$true
-        $autoStatus.Text='ARMED · SESSION '+$id+' · másold ezt a session azonosítót a chatbe egyszer.'
+        $autoStatus.Text='ARMED · GitHub mailbox · SESSION '+$id+' · másold ezt a session azonosítót a chatbe egyszer.'
         [Windows.Forms.Clipboard]::SetText('VIREX SESSION '+$id+' REPO '+$repo)
     }catch{Stop-AutonomousSession $_.Exception.Message}
 })
@@ -112,19 +150,35 @@ $autonomousTimer.Add_Tick({
                 if($s.State -eq 'PASS' -or $s.Round -ge 4){Stop-AutonomousSession ('DONE · '+$s.State+' · TXT elküldve.');return}
                 $s.Round++;$s.Phase='WAIT';$s.Next=[DateTime]::UtcNow.AddSeconds(30)
                 $autoStatus.Text='WAIT · hotfix kör '+$s.Round
-            }elseif($row[0].result -eq 'WAIT'){
-                $s.Next=[DateTime]::UtcNow.AddSeconds(30)
-            }elseif($row[0].result -eq 'PLAN'){
-                $items=@(ConvertFrom-AutonomousPlan $row[0].payload $s)
-                if(Test-StorageBusy){throw 'Runner busy; no execution.'}
-                $s.LastSha=$items[0].Target.ExpectedSha
-                $s.Phase='RUNNING'
-                Start-ApprovedBatch $items
-                $autoStatus.Text='RUNNING · kör '+$s.Round+' / 4'
-            }else{throw ('Makróhiba: '+$row[0].payload)}
+            }else{throw 'Unexpected legacy poll acknowledgement.'}
+        }elseif($script:autoFetch){
+            $fetch=$script:autoFetch
+            if(!$fetch.Task.IsCompleted){return}
+            $response=$null;$json=$null;$retry=$false
+            try{
+                if($fetch.Session -cne $s.Id -or $fetch.Round -ne $s.Round){throw 'Stale mailbox fetch.'}
+                $response=$fetch.Task.GetAwaiter().GetResult()
+                $status=[int]$response.StatusCode
+                if($status -eq 404){$retry=$true;$autoStatus.Text='WAIT · GitHub tesztterv, kör '+$s.Round}
+                elseif($status -eq 429 -or $status -ge 500){$retry=$true;$autoStatus.Text='WAIT · GitHub HTTP '+$status}
+                elseif($status -ne 200){throw ('Mailbox HTTP '+$status)}
+                else{$json=$response.Content.ReadAsStringAsync().GetAwaiter().GetResult()}
+            }finally{
+                if($response){$response.Dispose()}
+                Stop-AutonomousFetch
+            }
+            if($retry){$s.Next=[DateTime]::UtcNow.AddSeconds(15);return}
+            $items=@(ConvertFrom-AutonomousPlan $json $s)
+            if(Test-StorageBusy -or $script:batchActive -or $script:bridgePending -or $script:importPending){
+                $s.Next=[DateTime]::UtcNow.AddSeconds(15);$autoStatus.Text='WAIT · runner busy';return
+            }
+            $s.LastSha=$items[0].Target.ExpectedSha
+            $s.Phase='RUNNING'
+            Start-ApprovedBatch $items
+            $autoStatus.Text='RUNNING · GitHub mailbox · kör '+$s.Round+' / 4'
         }elseif($s.Phase -eq 'WAIT' -and [DateTime]::UtcNow -ge $s.Next -and !(Test-StorageBusy) -and !$script:bridgePending -and !$script:importPending){
-            Start-AutonomousJob 'POLL'
-            $autoStatus.Text='WAIT · chat tesztterv, kör '+$s.Round
+            Start-AutonomousFetch $s
+            $autoStatus.Text='WAIT · GitHub tesztterv, kör '+$s.Round
         }
     }catch{Stop-AutonomousSession ('STOP · '+$_.Exception.Message)}
 })
