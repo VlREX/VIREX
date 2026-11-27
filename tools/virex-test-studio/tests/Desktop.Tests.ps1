@@ -44,6 +44,9 @@ $driver.Add_Tick({
             foreach($invalid in @('[]',$batchProfile,('['+$batchProfile.Replace('"check":true','"command":"cmd.exe"')+']'))){
                 $rejected=$false;try{ConvertFrom-StudioBatch $invalid|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Invalid batch accepted.'}
             }
+            $request=New-OrchestratorRequest 'VlREX/VIREX' 'fixture improvement'
+            if($request -notmatch 'Draft PR' -or $request -notmatch 'virex_batch' -or $request -notmatch 'fixture improvement'){throw 'Invalid PR request template.'}
+            $rejected=$false;try{New-OrchestratorRequest 'https://example.com' 'fixture'|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Unsafe request repo accepted.'}
             $bridgeFixture=Join-Path $fixture 'bridge'
             $bridgeFiles=Join-Path $bridgeFixture 'datasources'
             $null=New-Item -ItemType Directory -Path $bridgeFiles -Force

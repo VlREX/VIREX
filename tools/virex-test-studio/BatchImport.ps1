@@ -52,3 +52,42 @@ $importTimer.Add_Tick({
     }
 })
 $importTimer.Start()
+
+# PR request has its own macro and explicit consent; never merges or runs tests.
+$null=New-Caption $labLayout 'PR INDÍTÁSA · DEVELOPMENT REQUEST' 13 $cyan $true
+$null=New-Caption $labLayout 'GitHub fork (owner/repository)' 9 $muted
+$prRequestRepo=New-Object Windows.Forms.TextBox
+$prRequestRepo.Width=400;$prRequestRepo.MaxLength=141;$prRequestRepo.Text='VlREX/VIctory-Belobug-AMD';$labLayout.Controls.Add($prRequestRepo)
+$null=New-Caption $labLayout 'Javítás célja / fejlesztési feladat' 9 $muted
+$prRequestTask=New-Object Windows.Forms.TextBox
+$prRequestTask.Width=400;$prRequestTask.Height=75;$prRequestTask.Multiline=$true;$prRequestTask.MaxLength=2000;$labLayout.Controls.Add($prRequestTask)
+$prRequestStart=New-Action $labLayout 'PR indítása · START' '#245B58' 220
+$prRequestMacro=New-Action $labLayout 'PR makró megnyitása' '#355764' 220
+$prRequestStatus=New-Caption $labLayout 'IDLE · add meg a fejlesztési feladatot.' 9 $muted
+$prRequestStatus.MaximumSize=New-Object Drawing.Size(400,0)
+function New-OrchestratorRequest([string]$repo,[string]$task){
+    if($repo -cnotmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}$' -or $repo.Split('/')[1] -in @('.','..')){throw 'Érvénytelen GitHub fork.'}
+    if([string]::IsNullOrWhiteSpace($task) -or $task.Length -gt 2000){throw 'Add meg a fejlesztési célt (max. 2000 karakter).'}
+    $lines=@(
+        'VIREX ORCHESTRATOR | PR REQUEST',
+        ('Repository: '+$repo),
+        ('Feladat: '+$task),
+        'Vizsgáld át a forráskódot, készíts célzott javítást, ellenőrizd és hozz létre Draft PR-t a megadott forkban. Ne merge-eld és ne publikáld a kész verziót automatikusan.',
+        'A válaszban adj pontosan egy JSON kódblokkot ezzel a sémával: {"virex_batch":1,"profiles":[...]} . A profiles tömb 1-12 szigorú, v3 Studio profilt tartalmazzon, teljes commit SHA-val. Csak az engedélyezett profilmezőket használd, ne shell parancsokat.',
+        'A teszttervet a Studio a felhasználó jóváhagyása után futtatja. Tüntesd fel, mit ellenőriztél és mi maradt teszteletlen.'
+    )
+    return $lines -join [Environment]::NewLine
+}
+$prRequestMacro.Add_Click({Start-Process notepad.exe -ArgumentList ('"'+(Join-Path $appDir 'VIREX_PRRequest.js')+'"')})
+$prRequestStart.Add_Click({
+    if($script:batchActive -or $script:importPending -or $script:bridgePending -or (Test-StorageBusy)){return}
+    try{
+        if(!$script:bridgeConfig){throw 'Előbb mentsd az AutoBridge konfigurációját.'}
+        $cfg=Get-BridgeConfig $bridgeTarget.Text.Trim() $bridgeHtml.Text.Trim() $bridgeData.Text.Trim() $false
+        if($cfg.url -cne $script:bridgeConfig.url -or $cfg.html -cne $script:bridgeConfig.html -or $cfg.data -cne $script:bridgeConfig.data){throw 'Mentsd a módosított beállításokat.'}
+        $request=New-OrchestratorRequest $prRequestRepo.Text.Trim() $prRequestTask.Text.Trim()
+        if(!(Confirm-StudioRun ('A következő fejlesztési kérést elküldöd a mentett ChatGPT-beszélgetésbe?'+[Environment]::NewLine+$request))){return}
+        Start-BridgeTransfer $cfg $request 'VIREX_PRRequest.js'
+        $prRequestStatus.Text='Kérés átadva a makrónak. Az eredmény az AutoBridge állapotnál látszik.'
+    }catch{$prRequestStatus.Text=$_.Exception.Message}
+})
