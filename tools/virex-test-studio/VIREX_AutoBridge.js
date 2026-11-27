@@ -1,4 +1,4 @@
-// VIREX AutoBridge v3.1.4 candidate - no automatic submission.
+// VIREX AutoBridge v3.1.5 candidate - automatic submission after verified insertion.
 const name=String(uiv.getVar('!cmd_var1')||'');
 const target=String(uiv.getVar('!cmd_var2')||'');
 const id=String(uiv.getVar('!cmd_var3')||'');
@@ -26,8 +26,21 @@ try{
     if(state==='WRONG_TARGET')throw new Error(state);
   }
   if(!verified)throw new Error('Inserted but not verified. Draft retained.');
+  // User opted into automatic submission by installing this macro.
+  // Revalidate destination and report immediately before one send click.
+  const submission=uiv.evaluate(helpers+'if(h.verify(target,report)!=="VERIFIED")return "DRAFT_CHANGED";const buttons=Array.from(document.querySelectorAll("button[data-testid=send-button]")).filter(b=>{const r=b.getBoundingClientRect();return r.width>0&&r.height>0&&!b.disabled&&b.getAttribute("aria-disabled")!=="true"});if(buttons.length!==1)return "SEND_BUTTON_NOT_READY";const count=document.querySelectorAll("[data-message-author-role=user]").length;buttons[0].click();return "CLICKED:"+count;');
+  if(!/^CLICKED:\d+$/.test(submission))throw new Error(submission);
+  const count=Number(submission.split(':')[1]);
+  let confirmed=false;
+  for(let i=0;i<12;i++){
+    uiv.sleep('1s');
+    const state=uiv.evaluate(helpers+'if(location.href!==target)return "WRONG_TARGET";const e=h.editor();if(!e)return "WAIT";const count=document.querySelectorAll("[data-message-author-role=user]").length;return !h.hasDraft(e)&&count>'+count+'?"SENT":"WAIT";');
+    if(state==='SENT'){confirmed=true;break;}
+    if(state==='WRONG_TARGET')break;
+  }
+  if(!confirmed)throw new Error('SUBMISSION_UNCONFIRMED: inspect conversation; do not retry automatically.');
   uiv.csv.write(ack,[['OK:'+id]]);
-  uiv.log('VIREX AUTOBRIDGE | PASS | REPORT VERIFIED','green');
+  uiv.log('VIREX AUTOBRIDGE | PASS | REPORT SENT','green');
 }catch(e){
   try{uiv.csv.write(ack,[['FAIL:'+id]]);}catch(_){}
   uiv.log('VIREX AUTOBRIDGE | FAIL','red');
