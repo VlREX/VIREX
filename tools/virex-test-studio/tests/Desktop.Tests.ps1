@@ -41,6 +41,17 @@ $driver.Add_Tick({
             foreach($invalid in @($profileJson.Replace('"repeat":3','"repeat":2'),$profileJson.Replace('"check":true','"check":"true"'),$profileJson.Replace('"v":1','"v":1,"command":"cmd.exe"'))){
                 $rejected=$false;try{ConvertFrom-StudioProfile $invalid|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Invalid profile accepted.'}
             }
+            $profileV2='{"v":2,"target":"https://github.com/Belobug/VIctory-Belobug-AMD/pull/7","check":false,"workspace":true,"clippy":false,"repeat":1,"agility":true,"depth":false,"crate":"victory-gpu","test":"pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws","threads":1}'
+            Apply-StudioProfile $profileV2
+            if($manualCrate.Text -ne 'victory-gpu' -or !$manualSerial.Checked -or $manualTest.Text -notlike 'pipeline::*'){throw 'v2 profile failed.'}
+            if((Get-ManualTestArgs 'victory-gpu' 'a::b' $true ' --locked') -ne 'test -p victory-gpu --lib --locked a::b -- --exact --nocapture --test-threads=1'){throw 'Targeted arguments incorrect.'}
+            $badProfile=$profileV2.Replace('"crate":"victory-gpu"','"crate":"victory-gpu --workspace"')
+            $rejected=$false;try{ConvertFrom-StudioProfile $badProfile|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Unsafe crate accepted.'}
+            Apply-StudioProfile $profileJson
+            if($manualCrate.Text -or $manualTest.Text -or $manualSerial.Checked){throw 'v1 did not clear v2 targeting.'}
+            $crashLog='error: test failed, to rerun pass '+[char]96+'-p victory-shader --lib'+[char]96+[Environment]::NewLine+'exit code: 0xc0000005, STATUS_ACCESS_VIOLATION'
+            if((Get-CrashPackage '' $crashLog 101) -ne 'victory-shader' -or (Get-CrashPackage '' 'error: failed' 101)){throw 'Crash parser failed.'}
+            if((Get-SerialCrashCandidate ('test a::ok ... ok'+[Environment]::NewLine+'test b::suspect ... ')) -ne 'b::suspect' -or (Get-SerialCrashCandidate 'test b::ok ... ok')){throw 'Serial candidate parser failed.'}
             $modeSwitch.Checked=$true
             if($ckCheck.Enabled -or $profileLoad.Enabled -or !$modeSwitch.Checked){throw 'AUTO did not lock manual inputs.'}
             $modeSwitch.Checked=$false
@@ -228,6 +239,17 @@ fn main() {
         } elseif ($script:phase -eq 35 -and $script:runState -ne 'RUNNING') {
             $report=[IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))
             if($runState -ne 'FAIL' -or $levelResults['3'] -ne 'FAIL' -or $report -notmatch 'L4 \| Strict Clippy \| NOT RUN' -or @($steps|Where-Object {$_.Name -match '^L4'}).Count){throw $report}
+            $modeSwitch.Checked=$false
+            # Real child process returns NTSTATUS 0xC0000005; no unsafe memory access is needed.
+            [IO.File]::WriteAllText((Join-Path $sample 'src/lib.rs'),'#[test] fn studio_crash() { std::process::exit(-1073741819); }')
+            $modeSwitch.Checked=$true
+            $script:phase=36
+            $runButton.PerformClick()
+            if($runState -ne 'RUNNING'){throw 'Crash fixture did not start.'}
+        } elseif ($script:phase -eq 36 -and $script:runState -ne 'RUNNING') {
+            $report=[IO.File]::ReadAllText((Join-Path $runDir 'REPORT.txt'))
+            if($runState -ne 'FAIL' -or $levelResults['3'] -ne 'FAIL' -or $machine.CrashPackage -ne 'victory-gpu' -or @($steps|Where-Object {$_.Kind -eq 'diagserial'}).Count -ne 1 -or @($steps|Where-Object {$_.Kind -eq 'diagevent'}).Count -ne 1 -or !(Test-Path -LiteralPath (Join-Path $runDir 'ORIGINAL-FAIL.txt')) -or @($steps|Where-Object {$_.Name -match '^L4'}).Count){throw $report}
+            if($machine.CrashCandidate -and @($steps|Where-Object {$_.Kind -eq 'diagexact'}).Count -ne 1){throw 'Exact candidate retry missing.'}
             $modeSwitch.Checked=$false
             $script:phase=33
             Start-CacheOperation $false
