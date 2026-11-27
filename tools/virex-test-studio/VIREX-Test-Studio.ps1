@@ -203,7 +203,7 @@ try { $ownsMutex=$script:mutex.WaitOne(0) } catch [System.Threading.AbandonedMut
 if (-not $ownsMutex) { [System.Windows.Forms.MessageBox]::Show('Test Studio is already running.') | Out-Null; exit }
 
 function Color([string]$hex) { [System.Drawing.ColorTranslator]::FromHtml($hex) }
-$bg=Color '#0D1525'; $panel=Color '#19243B'; $fg=Color '#E5EDF7'; $muted=Color '#A5B5CA'; $cyan=Color '#77E2C6'; $green=Color '#51D88A'; $red=Color '#FF8181'
+$bg=Color '#0A1822'; $panel=Color '#0F212D'; $fg=Color '#ECF4F8'; $muted=Color '#A5BCCB'; $cyan=Color '#00DECE'; $green=Color '#51D88A'; $red=Color '#FF8181'
 $amber = Color '#FFD18C'
 function Get-ValidationStatusColor([string]$state) {
     switch ($state) {
@@ -233,6 +233,7 @@ $overviewTab=New-Object Windows.Forms.TabPage
 $overviewTab.Text='Áttekintés'
 $tabs.TabPages.Add($overviewTab)
 Add-StartPanel $overviewTab
+$motionToggle.Checked=$commandCenter.MotionEnabled
 $logTab=New-Object System.Windows.Forms.TabPage; $logTab.Text='Napló'; $logTab.BackColor=$bg; $tabs.TabPages.Add($logTab)
 $script:terminal=New-Object System.Windows.Forms.RichTextBox; $terminal.Dock='Fill'; $terminal.ReadOnly=$true; $terminal.BackColor=Color '#0B1220'; $terminal.ForeColor=$fg; $terminal.Font=Font 10 'Consolas'; $terminal.WordWrap=$false; $terminal.DetectUrls=$false; $logTab.Controls.Add($terminal)
 $benchTab=New-Object System.Windows.Forms.TabPage; $benchTab.Text='Mérések'; $benchTab.BackColor=$bg; $tabs.TabPages.Add($benchTab)
@@ -555,6 +556,7 @@ function Stop-Run {
 }
 . (Join-Path $appDir 'Repository.ps1')
 . (Join-Path $appDir 'Targets.ps1')
+Initialize-StudioNavigation
 $folderButton.Add_Click({$dir=$reports;if($script:runDir){$dir=$script:runDir}; Start-Process explorer.exe -ArgumentList ('"'+$dir+'"')})
 $copyButton.Add_Click({try{$reportPath=Join-Path $runDir 'REPORT.txt'; $content=if(Test-Path -LiteralPath $reportPath -PathType Leaf){$saved=[IO.File]::ReadAllText($reportPath);if($saved){$saved}else{$reportBox.Text}}else{$reportBox.Text};[System.Windows.Forms.Clipboard]::SetText($content); $foot.Text='A riport a vágólapra került.'}catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}})
 $copyFullButton.Add_Click({try{[System.Windows.Forms.Clipboard]::SetText([System.IO.File]::ReadAllText((Join-Path $runDir 'FULL-LOG.txt')));$foot.Text='A teljes napló a vágólapra került.'}catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}})
@@ -660,7 +662,7 @@ function Start-StudioRun {
             }
         }
         $updateButton.Enabled=$false;$openSource.Enabled=$false;$script:runState='RUNNING';$status.Text='Futtatás…';$status.ForeColor=$cyan;$progress.Maximum=$script:queue.Count;$progress.Value=0;$combo.Enabled=$false;$runButton.Enabled=$false;$stopButton.Enabled=$true;$copyButton.Enabled=$false;$copyFullButton.Enabled=$false
-        foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckFull,$ckWarp,$ckBench,$ckRepeat,$ckAgility,$ckDepth)){$c.Enabled=$false};Update-StorageDisplay;Update-ExecutionMode;$tabs.SelectedTab=if($auto){$labTab}else{$logTab};Add-Log "VIREX local validation | $($p.Name)`r`n$detail`r`n" $cyan;Start-Next
+        foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckFull,$ckWarp,$ckBench,$ckRepeat,$ckAgility,$ckDepth)){$c.Enabled=$false};Update-StorageDisplay;Update-ExecutionMode;$tabs.SelectedTab=$overviewTab;Add-Log "VIREX local validation | $($p.Name)`r`n$detail`r`n" $cyan;Start-Next
     } catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Unable to start')|Out-Null; if($script:runState -eq 'RUNNING'){Set-Idle 'FAIL'} }
 }
 $runButton.Add_Click({Start-StudioRun})

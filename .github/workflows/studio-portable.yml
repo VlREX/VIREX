@@ -30,7 +30,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Validate version and create artwork
         run: |
-          if ((Get-Content VERSION -Raw).Trim() -ne '3.0.0') { throw 'Expected 3.0.0 source import' }
+          if ((Get-Content VERSION -Raw).Trim() -ne '3.0.1') { throw 'Expected 3.0.1 source import' }
           if (!(Test-Path PREVIEW)) { throw 'Preview marker is missing' }
           python -m pip install --disable-pip-version-check --only-binary=:all: Pillow==12.3.0
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -64,20 +64,20 @@ jobs:
           .\packaging\Build.ps1 -Preview
       - name: Verify installation and removal
         run: |
-          $setup = (Resolve-Path 'artifacts\installer\VIREX-Test-Studio-3.0.0-Preview-Setup.exe').Path
+          $setup = (Resolve-Path 'artifacts\installer\VIREX-Test-Studio-3.0.1-Preview-Setup.exe').Path
           $destination = Join-Path $env:RUNNER_TEMP ('virex-preview-' + [guid]::NewGuid())
           $p=Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/DIR="'+$destination+'"')) -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw 'Preview installation failed' }
           if (!(Test-Path (Join-Path $destination 'VIREX-Test-Studio.exe')) -or !(Test-Path (Join-Path $destination 'PREVIEW'))) { throw 'Preview files missing' }
-          if ((Get-Content (Join-Path $destination 'VERSION') -Raw).Trim() -ne '3.0.0') { throw 'Installed version mismatch' }
+          if ((Get-Content (Join-Path $destination 'VERSION') -Raw).Trim() -ne '3.0.1') { throw 'Installed version mismatch' }
           $p=Start-Process -FilePath (Join-Path $destination 'unins000.exe') -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait -PassThru
           if ($p.ExitCode -ne 0 -or (Test-Path (Join-Path $destination 'VIREX-Test-Studio.exe'))) { throw 'Preview removal failed' }
       - uses: actions/upload-artifact@v4
         with:
           name: studio-windows
           path: |
-            tools/virex-test-studio/artifacts/portable/VIREX-Test-Studio-3.0.0-Preview-Windows.zip
-            tools/virex-test-studio/artifacts/installer/VIREX-Test-Studio-3.0.0-Preview-Setup.exe
+            tools/virex-test-studio/artifacts/portable/VIREX-Test-Studio-3.0.1-Preview-Windows.zip
+            tools/virex-test-studio/artifacts/installer/VIREX-Test-Studio-3.0.1-Preview-Setup.exe
           if-no-files-found: error
           retention-days: 14
   publish:
@@ -99,11 +99,11 @@ jobs:
           set -euo pipefail
           tag=studio-preview
           if ! gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
-            gh release create "$tag" --repo "$GH_REPO" --target "$GITHUB_SHA" --prerelease --latest=false --title 'VIREX Test Studio 3.0 Preview' --notes '3.0.0 Windows preview. Windows CI passed; physical GPU validation remains separate.'
+            gh release create "$tag" --repo "$GH_REPO" --target "$GITHUB_SHA" --prerelease --latest=false --title 'VIREX Test Studio 3.0 Preview' --notes '3.0.1 Windows preview. Windows CI passed; physical GPU validation remains separate.'
           fi
           test "$(gh release view "$tag" --repo "$GH_REPO" --json isPrerelease --jq '.isPrerelease')" = true
           mkdir verified
-          for name in VIREX-Test-Studio-3.0.0-Preview-Windows.zip VIREX-Test-Studio-3.0.0-Preview-Setup.exe; do
+          for name in VIREX-Test-Studio-3.0.1-Preview-Windows.zip VIREX-Test-Studio-3.0.1-Preview-Setup.exe; do
             file="$(find package -type f -name "$name" -print -quit)"
             test -n "$file"
             if ! gh release view "$tag" --repo "$GH_REPO" --json assets --jq '.assets[].name' | grep -Fxq "$name"; then
@@ -113,40 +113,3 @@ jobs:
             cmp "$file" "verified/$name"
             sha256sum "$file"
           done
-  cleanup-old-studio-branches:
-    needs: publish
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 1
-      - name: Remove only unchanged obsolete Studio branches
-        shell: bash
-        run: |
-          set -euo pipefail
-          while read -r branch expected; do
-            ref="refs/heads/$branch"
-            actual="$(git ls-remote --heads origin "$ref" | cut -f1)"
-            if [[ -z "$actual" ]]; then continue; fi
-            if [[ "$actual" != "$expected" ]]; then
-              echo "Preserving $branch: changed since audit"
-              continue
-            fi
-            git push --force-with-lease="$ref:$expected" origin ":$ref"
-          done <<'OLD_REFS'
-          release/studio-2.0.0 73e02e975e2b9666b533ff9bbbdeef4b4bb3215f
-          release/studio-2.0.1 bccc616c73a7bb03260be279e7f2e294fe211079
-          release/studio-2.1.0 e8756d761207f1be8325de4b7e8f35606704f155
-          release/studio-2.1.1 2af75bd8c84a87167402aede19fe2f3b1aed4159
-          release/studio-2.1.2 0b3a8f0eea7cf6a6f72daf1bfa1a39bcee61efca
-          release/studio-2.2.0 b73963a9489cf970ebb4270f941bd57b560c3f6a
-          release/studio-2.2.1 8ee57d712962784a64adc1bed2988d8bccf2791d
-          studio/agility-2.1.1 2af75bd8c84a87167402aede19fe2f3b1aed4159
-          studio/automation-2.2.0 b73963a9489cf970ebb4270f941bd57b560c3f6a
-          studio/crash-2.2.1 4a741c3001b51b52aabb69859f1fc8706b30db63
-          studio/gpt-only-2.0.1 bccc616c73a7bb03260be279e7f2e294fe211079
-          studio/pr-manager-2.1.0 e8756d761207f1be8325de4b7e8f35606704f155
-          studio/storage-2.1.2 e5583e5887f22a641c2c6fd40e19ede9e5c69e1b
-          OLD_REFS

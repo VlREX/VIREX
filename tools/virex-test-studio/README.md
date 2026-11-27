@@ -1,6 +1,6 @@
-# VIREX Test Studio 3.0.0 Preview
+# VIREX Test Studio 3.0.1 Preview – Command Center
 
-[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-preview/VIREX-Test-Studio-3.0.0-Preview-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-preview)
+[**Hordozható Windows ZIP letöltése**](https://github.com/VlREX/VIREX/releases/download/studio-preview/VIREX-Test-Studio-3.0.1-Preview-Windows.zip) · [GitHub-kiadás](https://github.com/VlREX/VIREX/releases/tag/studio-preview)
 
 Magyar nyelvű Windows-alkalmazás Rust-projektek teszteléséhez. A kezdőképernyőn a **Belobug · VIctory AMD** cél van kiválasztva. A Studio lekéri az `a-publier` ágat, külön munkapéldányban futtatja a kiválasztott Cargo-ellenőrzéseket, és a riportba írja a ténylegesen tesztelt commitot. A saját fejlesztői példányodat a **Helyi projekt megnyitása** gombbal tudod tesztelni.
 
@@ -194,3 +194,7 @@ Az instrumentált depth-bounds teszt az ellenőrzött képpontok visszaolvasása
 ### Előnézeti telepítő
 
 A `packaging/Build.ps1 -Preview` külön előnézeti Setup.exe-t készít. A `packaging/Build-Portable.ps1 -Preview` az ugyanígy megjelölt hordozható ZIP-et hozza létre. Az előnézeti ablak címsorában megjelenik az „Előnézet” jelölés. Az előnézet a studio-preview GitHub-előkiadásból keresi a Preview-Setup.exe végű telepítőket. Ha a csatornán még nincs kiadás, az előnézet az elérhető csomagból kézzel frissíthető. Az előnézet külön telepítési mappát és eltávolítási bejegyzést használ. Az alkalmazás a meglévő Studio-adatmappát használja, így a riportok mindkét kiadásból elérhetők. A Setup.exe /PORTABLE=1 /DIR="C:\VIREX-Preview" kapcsolóval parancsikon és eltávolítási bejegyzés nélkül is kicsomagolható egy írható mappába.
+
+## 3.0.1 – vizuális frissítés
+
+A referencia alapján natív, dupla pufferelt Command Center, valódi tesztállapotok, rendszerszintű CPU/RAM/GPU idősorok és cache-meghajtó adatok. A folyamatjelző a befejezett lépések arányát mutatja, nem becsült futási időt. Az Animáció kapcsoló kikapcsolja a folyamatjelző mozgását. A hiányzó vagy 15 másodpercnél régebbi hardvermintákat N/A jelöli. Az eredeti tesztmotor, GPU-validáció, benchmarkfeldolgozás és preview frissítő változatlan. A CI képernyőkép szintetikus UI tesztadatokat tartalmaz, nem hardveres validációt.

@@ -122,11 +122,26 @@ $driver.Add_Tick({
                 (Get-CompletedValidationStatus @($skippedStep, $unverifiedStep)) -ne 'NOT VERIFIED') {
                 throw 'Mixed validation results must not hide skipped or unverified steps.'
             }
+            $tabs.SelectedTab=$overviewTab
+            if($navButtons.Count -ne 8 -or $commandCenter.RunState -ne 'IDLE'){throw 'Command Center navigation or initial state missing.'}
+            $navButtons[2].PerformClick()
+            if($tabs.SelectedTab -ne $benchTab){throw 'Command Center navigation failed.'}
+            $navButtons[0].PerformClick()
+            $commandCenter.MotionEnabled=$false
+            $commandCenter.SetRun('RUNNING','Fut','NOT VERIFIED','Fixture UI only','MINTAADATOK · UI TESZT','Workspace tests',7,12,[string[]]@('Runner self-test','Fetch revision','Cargo check','Clippy','Workspace tests'),[string[]]@('PASS','PASS','PASS','PASS','RUNNING'),[string[]]@('0.2s','1.2s','8.5s','4.0s','…'))
+            $beforeSamples=$commandCenter.SampleCount
+            for($i=0;$i -lt 10;$i++){$commandCenter.Sample((20+($i*7)%45),(40+$i),(5+($i*3)%20),1.71,13.4,32)}
+            $commandCenter.SetStorage('Fixture G:',82.1,120)
+            if($commandCenter.Completed -ne 7 -or $commandCenter.Planned -ne 12 -or $commandCenter.GpuStatus -ne 'NOT VERIFIED' -or $commandCenter.SampleCount -lt [math]::Min(45,$beforeSamples+10)){throw 'Command Center display state failed.'}
             if ($PreviewPath) {
                 $bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height)
                 try { $form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height))); $bitmap.Save($PreviewPath,[Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
             }
+            Update-StudioOverview
             $form.Size=New-Object Drawing.Size(800,590)
+            $form.PerformLayout()
+            $smallBitmap=New-Object Drawing.Bitmap($commandCenter.Width,$commandCenter.Height)
+            try{$commandCenter.DrawToBitmap($smallBitmap,(New-Object Drawing.Rectangle(0,0,$commandCenter.Width,$commandCenter.Height)))}finally{$smallBitmap.Dispose()}
             $tabs.SelectedIndex=4
             if ($reviewPages.TabPages.Count -ne 2) { throw 'AI Review panels missing.' }
             $prompt=New-ReviewPrompt 'fixture evidence'

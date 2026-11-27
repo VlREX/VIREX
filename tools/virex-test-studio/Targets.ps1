@@ -40,6 +40,7 @@ function Update-TargetControls {
     $tip.SetToolTip($revision,$(if ($workspace) { $revision.Text } else { $p.Sha }))
     $welcomeName.Text=if ($workspace -and !$local -and $target) { $target.Name.Split('/')[-1] } elseif ($local -and $localProject) { Split-Path -Leaf $localProject } elseif (!$workspace) { $p.Crate } else { 'Projekt kiválasztása' }
     $welcomeDetail.Text=$revision.Text
+    Update-StudioOverview
     if (Get-Command Update-ExecutionMode -ErrorAction SilentlyContinue) { Update-ExecutionMode }
 }
 
@@ -321,6 +322,7 @@ $null=New-Caption $storageLayout 'GPU: legterheltebb motor; VRAM: dedikált mem�
 function Test-StorageBusy { return ($script:runState -eq 'RUNNING' -or $script:unsafeState -or $script:updateWorker -or $script:cacheWorker) }
 function Update-StorageDisplay {
     $storagePath.Text=$cacheRoot
+    try{$drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($cacheRoot)));$commandCenter.SetStorage($drive.Name,$drive.AvailableFreeSpace/1GB,$drive.TotalSize/1GB)}catch{$commandCenter.SetStorage('Cache',-1,-1)}
     try { $storageFree.Text=('Cache: {0:N1} GiB szabad | Riport: {1:N1} GiB szabad' -f ((Get-FreeBytes $cacheRoot)/1GB),((Get-FreeBytes $root)/1GB)) }
     catch { $storageFree.Text='A cache meghajtó nem elérhető.' }
     foreach($control in @($storageChoose,$storageDefault,$storageMeasure,$storageClean)) { $control.Enabled=!(Test-StorageBusy) }
@@ -405,6 +407,7 @@ $storageTimer.Add_Tick({
         try {
             $r=@($monitorWorker.EndInvoke($monitorJob))[0]
             if ($r) {
+                $commandCenter.Sample($(if($null -eq $r.CPU){-1}else{$r.CPU}),$(if($null -eq $r.RAM){-1}else{$r.RAM}),$(if($null -eq $r.GPU){-1}else{$r.GPU}),$(if($null -eq $r.VRAM){-1}else{$r.VRAM}),$(if($null -eq $r.RamUsed){-1}else{$r.RamUsed}),$(if($null -eq $r.RamTotal){-1}else{$r.RamTotal}))
                 $monitorText.Text=('CPU: {0} % | RAM: {1} %'+[Environment]::NewLine+'GPU: {2} % | VRAM: {3} GiB') -f $(if($null -eq $r.CPU){'N/A'}else{$r.CPU}),$(if($null -eq $r.RAM){'N/A'}else{$r.RAM}),$(if($null -eq $r.GPU){'N/A'}else{$r.GPU}),$(if($null -eq $r.VRAM){'N/A'}else{$r.VRAM})
                 if($runState -eq 'RUNNING'){
                     $script:monitorSamples++
@@ -414,11 +417,11 @@ $storageTimer.Add_Tick({
         } catch { $monitorText.Text='Hardvermérés nem elérhető.' }
         finally { $monitorWorker.Dispose(); $script:monitorWorker=$null }
     }
-    if (!$monitorWorker -and ($runState -eq 'RUNNING' -or $tabs.SelectedTab -eq $storageTab)) {
+    if (!$monitorWorker -and ($runState -eq 'RUNNING' -or $tabs.SelectedTab -eq $storageTab -or $tabs.SelectedTab -eq $overviewTab)) {
         $sample={
-            $r=@{CPU=$null;RAM=$null;GPU=$null;VRAM=$null}
+            $r=@{CPU=$null;RAM=$null;GPU=$null;VRAM=$null;RamUsed=$null;RamTotal=$null}
             try {$r.CPU=[math]::Round((Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -ErrorAction Stop).PercentProcessorTime,0)}catch{}
-            try {$os=Get-CimInstance Win32_OperatingSystem -ErrorAction Stop; if($os.TotalVisibleMemorySize -gt 0){$r.RAM=[math]::Round(100*(1-$os.FreePhysicalMemory/$os.TotalVisibleMemorySize),0)}}catch{}
+            try {$os=Get-CimInstance Win32_OperatingSystem -ErrorAction Stop; if($os.TotalVisibleMemorySize -gt 0){$r.RAM=[math]::Round(100*(1-$os.FreePhysicalMemory/$os.TotalVisibleMemorySize),0);$r.RamTotal=$os.TotalVisibleMemorySize/1MB;$r.RamUsed=($os.TotalVisibleMemorySize-$os.FreePhysicalMemory)/1MB}}catch{}
             try {
                 $engines=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -ErrorAction Stop)
                 if($engines.Count){
