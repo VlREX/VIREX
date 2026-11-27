@@ -92,8 +92,13 @@ function Add-WorkspaceCargoSteps([string]$cargo, [string]$directory) {
     }
     if ($ckCheck.Checked) { Add-Step 'Workspace check' $cargo "check --workspace$lock" }
     if ($ckTest.Checked) {
+        if($script:machine.ManualCrate){
+            $args=Get-ManualTestArgs $script:machine.ManualCrate $script:machine.ManualTest $script:machine.ManualSerial $lock
+            for($pass=1;$pass -le $script:machine.Repeat;$pass++){Add-Step "Targeted crate tests ($pass/$($script:machine.Repeat))" $cargo $args 'tests'}
+        }else{
         for ($pass=1; $pass -le $script:machine.Repeat; $pass++) {
             Add-Step "Workspace tests ($pass/$($script:machine.Repeat))" $cargo "test --workspace$lock -- --nocapture" 'tests'
+        }
         }
     }
     if ($script:machine.DepthRequested) {
@@ -395,15 +400,21 @@ function ConvertFrom-StudioProfile([string]$json) {
     $data=ConvertFrom-Json -InputObject $json -ErrorAction Stop
     if ($data -isnot [pscustomobject]) { throw 'A tesztprofil egy JSON objektum.' }
     $keys=@('v','target','check','workspace','clippy','repeat','agility','depth')
+    if($data.v -eq 2){$keys+=@('crate','test','threads')}
     $actual=@($data.PSObject.Properties.Name)
     if ($actual.Count -ne $keys.Count -or @($actual | Where-Object { $_ -cnotin $keys }).Count) { throw 'Ismeretlen vagy hiányzó profilmező.' }
-    if ($data.v -isnot [int] -or $data.v -ne 1) { throw 'Nem támogatott profilverzió.' }
+    if ($data.v -isnot [int] -or $data.v -notin @(1,2)) { throw 'Nem támogatott profilverzió.' }
     if ($data.target -isnot [string] -or $data.target.Length -gt 400) { throw 'Érvénytelen tesztcél.' }
     foreach ($key in @('check','workspace','clippy','agility','depth')) {
         if ($data.$key -isnot [bool]) { throw "A $key mező csak true vagy false lehet." }
     }
     if ($data.repeat -isnot [int] -or $data.repeat -notin @(1,3)) { throw 'Az ismétlés csak 1 vagy 3 lehet.' }
     if (!$data.check -and !$data.workspace -and !$data.clippy -and !$data.depth) { throw 'Legalább egy teszt szükséges.' }
+    if($data.v -eq 2){
+        if($data.crate -isnot [string] -or $data.test -isnot [string] -or $data.threads -isnot [int] -or $data.threads -notin @(0,1)){throw 'Érvénytelen crate / test / threads mező.'}
+        if(!$data.workspace){throw 'A célzott crate teszthez workspace:true szükséges.'}
+        $null=Get-ManualTestArgs $data.crate $data.test ($data.threads -eq 1) ''
+    }
     $target=ConvertTo-RevisionTarget $data.target
     return @{Target=$target;Options=$data}
 }
@@ -419,6 +430,7 @@ function Apply-StudioProfile([string]$json) {
     $ckCheck.Checked=$d.check; $ckTest.Checked=$d.workspace; $ckClippy.Checked=$d.clippy
     $ckRepeat.Checked=($d.repeat -eq 3); $ckAgility.Checked=$d.agility; $ckDepth.Checked=$d.depth
     $ckFull.Checked=$false; $ckBench.Checked=$false; $ckWarp.Checked=$false
+    $manualCrate.Text=if($d.v -eq 2){$d.crate}else{''};$manualTest.Text=if($d.v -eq 2){$d.test}else{''};$manualSerial.Checked=($d.v -eq 2 -and $d.threads -eq 1)
     $profileStatus.Text='Profil betöltve. Ellenőrizd a pipákat, majd Futtatás. Semmi nem indult el.'
 }
 function Get-AutoPlan([bool]$d3d) {
@@ -456,6 +468,14 @@ $profileBox.Font=Font 9 'Consolas';$labLayout.Controls.Add($profileBox)
 $profileLoad=New-Action $labLayout 'Profil betöltése' '#245B58' 185
 $profileStatus=New-Caption $labLayout 'JSON v1 · csak ismert mezők · nem futtat parancsot.' 9 $muted
 $profileStatus.MaximumSize=New-Object Drawing.Size(400,0)
+$null=New-Caption $labLayout 'MANUAL · célzott lib teszt (opcionális)' 12 $fg $true
+$manualCrate=New-Object Windows.Forms.TextBox;$manualCrate.Width=400;$manualCrate.MaxLength=100
+$labLayout.Controls.Add($manualCrate)
+$null=New-Caption $labLayout 'Crate neve (pl. victory-shader); üres = workspace' 9 $muted
+$manualTest=New-Object Windows.Forms.TextBox;$manualTest.Width=400;$manualTest.MaxLength=300
+$labLayout.Controls.Add($manualTest)
+$null=New-Caption $labLayout 'Pontos tesztnév; üres = teljes crate lib' 9 $muted
+$manualSerial=Check $labLayout 'Soros futtatás (1 tesztszál)' 0 0 300 $false
 $profileLoad.Add_Click({try{Apply-StudioProfile $profileBox.Text}catch{$profileStatus.Text=$_.Exception.Message}})
 function Update-LabProgress([int]$runningLevel=-1) {
     $labPlan.BeginUpdate()
@@ -479,6 +499,7 @@ function Update-ExecutionMode {
     if(Test-LocalTarget){$autoProfile.SelectedIndex=0}
     $profileBox.Enabled=!$auto -and !$busy
     $profileLoad.Enabled=$profileBox.Enabled
+    foreach($c in @($manualCrate,$manualTest,$manualSerial)){$c.Enabled=!$auto -and !$busy -and (Test-WorkspaceTarget)}
     if($auto){foreach($c in @($ckCheck,$ckTest,$ckClippy,$ckRepeat,$ckAgility,$ckDepth,$ckFull,$ckWarp,$ckBench)){$c.Enabled=$false}}
     $labPlan.Items.Clear()
     if($auto){Update-LabProgress}
@@ -513,3 +534,80 @@ function Write-AutoCheckpoint([int]$level,[string]$state) {
     Update-LabProgress
 }
 Update-ExecutionMode
+
+
+function Get-ManualTestArgs([string]$crate,[string]$test,[bool]$serial,[string]$lock) {
+    if($crate -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$'){throw 'Érvénytelen crate név.'}
+    if($test -and $test -cnotmatch '^[A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)*$'){throw 'Érvénytelen pontos tesztnév.'}
+    if($test.Length -gt 300){throw 'Túl hosszú tesztnév.'}
+    $arg="test -p $crate --lib$lock"
+    if($test){$arg+=" $test -- --exact --nocapture"}else{$arg+=' -- --nocapture'}
+    if($serial){$arg+=' --test-threads=1'}
+    return $arg
+}
+function Get-CrashPackage([string]$output,[string]$errors,$exitCode) {
+    $combined=$output+[Environment]::NewLine+$errors
+    if($exitCode -ne -1073741819 -and $combined -notmatch '(?i)0xc0000005|STATUS_ACCESS_VIOLATION'){return $null}
+    $matchesFound=[regex]::Matches($combined,'(?m)^error: test failed, to rerun pass .-p ([A-Za-z0-9][A-Za-z0-9_-]{0,99}) --lib.\s*$')
+    if($matchesFound.Count -eq 0){return $null}
+    $packages=@($matchesFound | ForEach-Object {$_.Groups[1].Value} | Select-Object -Unique)
+    if($packages.Count -ne 1){return $null}
+    return $packages[0]
+}
+function Get-SerialCrashCandidate([string]$output) {
+    $found=[regex]::Matches($output,'(?m)^test ([A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)*) \.\.\. ')
+    if(!$found.Count){return $null}
+    $last=$found[$found.Count-1]
+    $tail=$output.Substring($last.Index+$last.Length)
+    # A completion can be on a separate line with nocapture. Never infer a culprit from an already completed test.
+    if($tail -match '(?m)(?:^|\s)(?:ok|FAILED|ignored)(?:,.*)?\s*$'){return $null}
+    $name=$last.Groups[1].Value
+    if($name.Length -gt 300){return $null}
+    return $name
+}
+function Start-CrashDiagnostics($step,[string]$out,[string]$err) {
+    if(!$script:machine.AutoMode -or $script:diagnosticActive -or $step.Kind -ne 'tests' -or (Get-StepLevel $step) -ne 3){return $false}
+    $package=Get-CrashPackage $out $err $step.Exit
+    if(!$package){return $false}
+    # Preserve evidence and original FAIL before any retry.
+    Write-AutoCheckpoint 3 'FAIL'
+    $script:machine.CrashPackage=$package
+    $script:machine.CrashOriginalExit=$step.Exit
+    $script:machine.CrashResult='PENDING'
+    $script:diagnosticActive=$true
+    $script:queue.Clear()
+    try{
+        $script:runState='FAIL'
+        Save-Report
+    }finally{$script:runState='RUNNING'}
+    $lock=if(Test-Path -LiteralPath (Join-Path $workDir 'Cargo.lock') -PathType Leaf){' --locked'}else{''}
+    Add-Step "D1 | Serial crash isolation: $package" $workspaceCargo (Get-ManualTestArgs $package '' $true $lock) 'diagserial'
+    $progress.Maximum=$steps.Count+$queue.Count
+    Add-Log ("Original FAIL preserved; diagnostic retry of "+$package+[Environment]::NewLine) $cyan
+    return $true
+}
+function Add-CrashEventStep {
+    # Fixed local read-only Windows event query; no registry changes or dumps.
+    $exeName=$script:machine.CrashPackage.Replace('-','_')
+    $since=$script:started.ToUniversalTime().ToString('o')
+    $command='$ErrorActionPreference="Stop"; try { $events=@(Get-WinEvent -FilterHashtable @{LogName="Application";Id=1000;StartTime=[datetime]::Parse("'+$since+'").ToLocalTime()} -MaxEvents 50 -ErrorAction Stop | Where-Object {$_.ProviderName -eq "Application Error" -and $_.Message -match "(?i)'+$exeName+'-[a-f0-9]+\.exe"}); if(!$events.Count){"No matching crash event found."}else{foreach($event in $events){$event.TimeCreated.ToString("o"); $event.Message}} } catch {"Crash event unavailable: "+$_.Exception.Message}'
+    $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    Add-Step 'D3 | Windows Application Error evidence' (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') "-NoProfile -NonInteractive -EncodedCommand $encoded" 'diagevent'
+}
+function Complete-CrashStep($step,[string]$out,[string]$err,[bool]$valid) {
+    if($step.Kind -eq 'diagserial'){
+        $script:machine.CrashResult=if($valid){'NOT REPRODUCED IN SERIAL RUN'}else{'SERIAL RUN FAILED'}
+        if(!$valid -and ($step.Exit -eq -1073741819 -or ($out+$err) -match '(?i)0xc0000005|STATUS_ACCESS_VIOLATION')){
+            $candidate=Get-SerialCrashCandidate $out
+            if($candidate){
+                $script:machine.CrashCandidate=$candidate
+                $lock=if(Test-Path -LiteralPath (Join-Path $workDir 'Cargo.lock') -PathType Leaf){' --locked'}else{''}
+                Add-Step "D2 | Exact candidate: $candidate" $workspaceCargo (Get-ManualTestArgs $script:machine.CrashPackage $candidate $true $lock) 'diagexact'
+            }
+        }
+        Add-CrashEventStep
+    }elseif($step.Kind -eq 'diagexact'){
+        $script:machine.CrashResult=if($valid){'EXACT CANDIDATE PASSED; ORIGINAL CRASH REMAINS'}else{'EXACT CANDIDATE FAILED; INSPECT EXIT AND LOG'}
+    }
+    $progress.Maximum=$steps.Count+$queue.Count
+}
