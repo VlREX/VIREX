@@ -55,6 +55,8 @@ Source: "..\BatchQueue.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\BatchImport.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\VIREX_BatchImport.js"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\VIREX_PRRequest.js"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\Autonomous.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\VIREX_Autonomous.js"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\VIREX_AutoBridge.js"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\StudioUpdate.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\DesktopUpdate.ps1"; DestDir: "{app}"; Flags: ignoreversion

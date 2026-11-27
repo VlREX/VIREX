@@ -48,13 +48,14 @@ function Finish-StudioBatch([string]$state){
         }
         Add-BatchReport ('BATCH STATUS: '+$state)
         $batchStatus.Text=$state+' | '+$script:batchReport
-    }catch{$batchStatus.Text='REPORT ERROR: '+$_.Exception.Message}
+    }catch{$state='REPORT_ERROR';$batchStatus.Text='REPORT ERROR: '+$_.Exception.Message}
     finally{
         $script:batchActive=$false;$script:batchWaiting=$false;$script:batchCurrent=$false
         $batchStart.Enabled=$true;$batchCancel.Enabled=$false;$batchBox.Enabled=$true
         $batchFolder.Enabled=[bool]$script:batchReport
         $runButton.Enabled=!(Test-StorageBusy)
     }
+    if($script:autoSession -and $script:autoSession.Phase -eq 'RUNNING'){Complete-AutonomousBatch $state}
 }
 function Complete-BatchRun([string]$state,[bool]$saved){
     if(!$script:batchActive -or !$script:batchCurrent){return}
@@ -72,12 +73,9 @@ function Complete-BatchRun([string]$state,[bool]$saved){
         }else{$script:batchWaiting=$true;$runButton.Enabled=$false}
     }catch{Finish-StudioBatch 'REPORT_ERROR'}
 }
-$batchStart.Add_Click({
-    if($script:batchActive -or $script:importPending -or (Test-StorageBusy)){return}
-    try{
-        $items=@(ConvertFrom-StudioBatch $batchBox.Text)
-        $summary=($items|ForEach-Object {$_.Json}) -join ([Environment]::NewLine+[Environment]::NewLine)
-        if(!(Confirm-StudioRun ('Approve all pinned profiles below? Cargo and repository code run with your Windows account permissions. The batch stops at the first non-PASS.'+[Environment]::NewLine+$summary))){return}
+function Start-ApprovedBatch($items){
+    if($script:batchActive -or $script:importPending -or (Test-StorageBusy)){throw 'Runner is busy.'}
+    if(@($items).Count -lt 1 -or @($items).Count -gt 12){throw 'Invalid approved batch.'}
         $directory=Join-Path $reports ('batch-'+[guid]::NewGuid().ToString('N'))
         $null=[IO.Directory]::CreateDirectory($directory)
         $script:batchReport=Join-Path $directory 'BATCH-REPORT.txt'
@@ -86,6 +84,14 @@ $batchStart.Add_Click({
         $script:batchActive=$true;$script:batchWaiting=$true
         $batchStart.Enabled=$false;$batchCancel.Enabled=$true;$batchBox.Enabled=$false;$batchFolder.Enabled=$true;$runButton.Enabled=$false
         $batchStatus.Text='QUEUED | '+$items.Count+' profiles'
+}
+$batchStart.Add_Click({
+    if($script:autoSession -or $script:batchActive -or $script:importPending -or (Test-StorageBusy)){return}
+    try{
+        $items=@(ConvertFrom-StudioBatch $batchBox.Text)
+        $summary=($items|ForEach-Object {$_.Json}) -join ([Environment]::NewLine+[Environment]::NewLine)
+        if(!(Confirm-StudioRun ('Approve all pinned profiles below? Cargo and repository code run with your Windows account permissions. The batch stops at the first non-PASS.'+[Environment]::NewLine+$summary))){return}
+        Start-ApprovedBatch $items
     }catch{$batchStatus.Text=$_.Exception.Message}
 })
 $batchCancel.Add_Click({

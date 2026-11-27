@@ -47,6 +47,10 @@ $driver.Add_Tick({
             $request=New-OrchestratorRequest 'VlREX/VIREX' 'fixture improvement'
             if($request -notmatch 'Draft PR' -or $request -notmatch 'virex_batch' -or $request -notmatch 'fixture improvement'){throw 'Invalid PR request template.'}
             $rejected=$false;try{New-OrchestratorRequest 'https://example.com' 'fixture'|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Unsafe request repo accepted.'}
+            $session=@{Id='0123456789abcdef0123456789abcdef';Round=1;Origin=$batchParsed[0].Target.Origin;LastSha=''}
+            $envelope=ConvertTo-Json -Depth 8 -Compress -InputObject @{virex_batch=1;session=$session.Id;round=1;profiles=@((ConvertFrom-Json $batchProfile))}
+            if(@(ConvertFrom-AutonomousPlan $envelope $session).Count -ne 1){throw 'Autonomous plan failed.'}
+            foreach($badEnvelope in @($envelope.Replace($session.Id,('f'*32)), $envelope.Replace('VlREX/VIREX','other/repo'))){$rejected=$false;try{ConvertFrom-AutonomousPlan $badEnvelope $session|Out-Null}catch{$rejected=$true};if(!$rejected){throw 'Unapproved autonomous plan accepted.'}}
             $bridgeFixture=Join-Path $fixture 'bridge'
             $bridgeFiles=Join-Path $bridgeFixture 'datasources'
             $null=New-Item -ItemType Directory -Path $bridgeFiles -Force

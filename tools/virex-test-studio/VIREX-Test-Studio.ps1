@@ -562,6 +562,7 @@ function Stop-Run {
 . (Join-Path $appDir 'AutoBridge.ps1')
 . (Join-Path $appDir 'BatchQueue.ps1')
 . (Join-Path $appDir 'BatchImport.ps1')
+. (Join-Path $appDir 'Autonomous.ps1')
 Initialize-StudioNavigation
 $folderButton.Add_Click({$dir=$reports;if($script:runDir){$dir=$script:runDir}; Start-Process explorer.exe -ArgumentList ('"'+$dir+'"')})
 $copyButton.Add_Click({try{$reportPath=Join-Path $runDir 'REPORT.txt'; $content=if(Test-Path -LiteralPath $reportPath -PathType Leaf){$saved=[IO.File]::ReadAllText($reportPath);if($saved){$saved}else{$reportBox.Text}}else{$reportBox.Text};[System.Windows.Forms.Clipboard]::SetText($content); $foot.Text='A riport a vágólapra került.'}catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}})
@@ -569,7 +570,7 @@ $copyFullButton.Add_Click({try{[System.Windows.Forms.Clipboard]::SetText([System
 $stopButton.Add_Click({Stop-Run})
 function Start-StudioRun {
     param([switch]$BatchApproved)
-    if ((Test-StorageBusy) -or ($script:batchActive -and !$BatchApproved)) { return }
+    if ((Test-StorageBusy) -or (($script:batchActive -or $script:autoSession) -and !$BatchApproved)) { return }
     try {
         # A pasted MANUAL profile may be run directly; retain already loaded
         # settings so the user can adjust the checkboxes before confirming.
@@ -679,7 +680,7 @@ function Start-StudioRun {
         if ($consumeProfile -and $script:runState -eq 'RUNNING' -and $script:proc) {
             Clear-StudioProfile 'Futtatás elindult. A következő profil beilleszthető a teszt után.'
         }
-    } catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Unable to start')|Out-Null; if($script:runState -eq 'RUNNING'){Set-Idle 'FAIL'} }
+    } catch { if($BatchApproved){Add-Log ('Batch start error: '+$_.Exception.Message) $red}else{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Unable to start')|Out-Null}; if($script:runState -eq 'RUNNING'){Set-Idle 'FAIL'} }
 }
 $runButton.Add_Click({Start-StudioRun})
 $form.Add_FormClosing({param($sender,$e)
@@ -700,7 +701,7 @@ $form.Add_Shown({
     $combo.Select()
 })
 $timer.Start()
-try{[void]$form.ShowDialog()}finally{$timer.Stop();$timer.Dispose();$batchTimer.Stop();$batchTimer.Dispose();$importTimer.Stop();$importTimer.Dispose();$bridgeTimer.Stop();$bridgeTimer.Dispose();$storageTimer.Stop();$storageTimer.Dispose();if($monitorWorker){$null=$monitorWorker.BeginStop($null,$null)};$updateTimer.Stop();$updateTimer.Dispose();if ($updateWorker) { $null=$updateWorker.BeginStop($null,$null) };if($script:proc){try{$script:proc.Dispose()}catch{}};$script:mutex.ReleaseMutex();$script:mutex.Dispose();$form.Dispose()}
+try{[void]$form.ShowDialog()}finally{$timer.Stop();$timer.Dispose();$batchTimer.Stop();$batchTimer.Dispose();$importTimer.Stop();$importTimer.Dispose();$autonomousTimer.Stop();$autonomousTimer.Dispose();$bridgeTimer.Stop();$bridgeTimer.Dispose();$storageTimer.Stop();$storageTimer.Dispose();if($monitorWorker){$null=$monitorWorker.BeginStop($null,$null)};$updateTimer.Stop();$updateTimer.Dispose();if ($updateWorker) { $null=$updateWorker.BeginStop($null,$null) };if($script:proc){try{$script:proc.Dispose()}catch{}};$script:mutex.ReleaseMutex();$script:mutex.Dispose();$form.Dispose()}
 
 if ($script:pendingSetup) {
     try { Start-VerifiedSetup $script:pendingSetup $script:updateOffer.Hash }
