@@ -431,6 +431,21 @@ fn main() {
             Start-CacheOperation $false
             if(!$cacheWorker -or $runButton.Enabled -or $updateButton.Enabled){throw 'Cache worker gating failed.'}
         } elseif ($script:phase -eq 33 -and !$script:cacheWorker) {
+            if($storageResult.Text -notlike 'Cache mérete:*' -or !$runButton.Enabled -or !$updateButton.Enabled){throw 'Cache measurement failed before batch.'}
+            $modeSwitch.Checked=$false
+            $tabs.SelectedTab=$labTab
+            $batchProfile=ConvertTo-Json -Compress -InputObject @{v=3;target=('https://github.com/Belobug/VIctory-Belobug-AMD/commit/'+$testSha);check=$false;workspace=$true;clippy=$false;repeat=1;agility=$false;depth=$false;crate='studio_fixture';test='studio_smoke';threads=0;release=$false;ignored=$false}
+            $bad=$batchProfile.Replace('studio_fixture','missing_fixture_package')
+            $batchBox.Text='['+$batchProfile+','+$batchProfile+','+$bad+','+$batchProfile+']'
+            function script:Confirm-StudioRun([string]$message) { return $message.Contains($testSha) -and $message.Contains('missing_fixture_package') -and $message.Contains('Approve all pinned profiles') }
+            $script:phase=38
+            $batchStart.PerformClick()
+            if(!$script:batchActive){throw 'Batch did not start.'}
+        } elseif ($script:phase -eq 38 -and !$script:batchActive) {
+            $batchLog=[IO.File]::ReadAllText($script:batchReport)
+            if($batchLog -notmatch 'PROFILE 1 \| PASS' -or $batchLog -notmatch 'PROFILE 2 \| PASS' -or $batchLog -notmatch 'PROFILE 3 \| FAIL' -or $batchLog -notmatch '\[4\] NOT RUN' -or $batchLog -notmatch 'BATCH STATUS: FAIL' -or $script:batchIndex -ne 3){throw $batchLog}
+            $script:phase=39
+        } elseif ($script:phase -eq 39) {
             if($storageResult.Text -notlike 'Cache mérete:*' -or !$runButton.Enabled -or !$updateButton.Enabled){throw "Cache measurement failed: $($storageResult.Text)"}
             $module=[IO.File]::ReadAllText((Join-Path $appDir 'StudioUpdate.ps1'))
             $tag = if ($ExpectPreview) { 'studio-preview' } else { 'studio-stable' }

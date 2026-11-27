@@ -561,6 +561,7 @@ function Stop-Run {
 . (Join-Path $appDir 'Targets.ps1')
 . (Join-Path $appDir 'AutoBridge.ps1')
 . (Join-Path $appDir 'BatchQueue.ps1')
+. (Join-Path $appDir 'BatchImport.ps1')
 Initialize-StudioNavigation
 $folderButton.Add_Click({$dir=$reports;if($script:runDir){$dir=$script:runDir}; Start-Process explorer.exe -ArgumentList ('"'+$dir+'"')})
 $copyButton.Add_Click({try{$reportPath=Join-Path $runDir 'REPORT.txt'; $content=if(Test-Path -LiteralPath $reportPath -PathType Leaf){$saved=[IO.File]::ReadAllText($reportPath);if($saved){$saved}else{$reportBox.Text}}else{$reportBox.Text};[System.Windows.Forms.Clipboard]::SetText($content); $foot.Text='A riport a vágólapra került.'}catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}})
@@ -699,7 +700,7 @@ $form.Add_Shown({
     $combo.Select()
 })
 $timer.Start()
-try{[void]$form.ShowDialog()}finally{$timer.Stop();$timer.Dispose();$batchTimer.Stop();$batchTimer.Dispose();$bridgeTimer.Stop();$bridgeTimer.Dispose();$storageTimer.Stop();$storageTimer.Dispose();if($monitorWorker){$null=$monitorWorker.BeginStop($null,$null)};$updateTimer.Stop();$updateTimer.Dispose();if ($updateWorker) { $null=$updateWorker.BeginStop($null,$null) };if($script:proc){try{$script:proc.Dispose()}catch{}};$script:mutex.ReleaseMutex();$script:mutex.Dispose();$form.Dispose()}
+try{[void]$form.ShowDialog()}finally{$timer.Stop();$timer.Dispose();$batchTimer.Stop();$batchTimer.Dispose();$importTimer.Stop();$importTimer.Dispose();$bridgeTimer.Stop();$bridgeTimer.Dispose();$storageTimer.Stop();$storageTimer.Dispose();if($monitorWorker){$null=$monitorWorker.BeginStop($null,$null)};$updateTimer.Stop();$updateTimer.Dispose();if ($updateWorker) { $null=$updateWorker.BeginStop($null,$null) };if($script:proc){try{$script:proc.Dispose()}catch{}};$script:mutex.ReleaseMutex();$script:mutex.Dispose();$form.Dispose()}
 
 if ($script:pendingSetup) {
     try { Start-VerifiedSetup $script:pendingSetup $script:updateOffer.Hash }

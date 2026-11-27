@@ -53,6 +53,7 @@ function Finish-StudioBatch([string]$state){
         $script:batchActive=$false;$script:batchWaiting=$false;$script:batchCurrent=$false
         $batchStart.Enabled=$true;$batchCancel.Enabled=$false;$batchBox.Enabled=$true
         $batchFolder.Enabled=[bool]$script:batchReport
+        $runButton.Enabled=!(Test-StorageBusy)
     }
 }
 function Complete-BatchRun([string]$state,[bool]$saved){
@@ -68,11 +69,11 @@ function Complete-BatchRun([string]$state,[bool]$saved){
             Finish-StudioBatch $(if($state -ne 'PASS'){$state}else{'CANCELLED'})
         }elseif($script:batchIndex -ge $script:batchItems.Count){
             Finish-StudioBatch 'PASS'
-        }else{$script:batchWaiting=$true}
+        }else{$script:batchWaiting=$true;$runButton.Enabled=$false}
     }catch{Finish-StudioBatch 'REPORT_ERROR'}
 }
 $batchStart.Add_Click({
-    if($script:batchActive -or (Test-StorageBusy)){return}
+    if($script:batchActive -or $script:importPending -or (Test-StorageBusy)){return}
     try{
         $items=@(ConvertFrom-StudioBatch $batchBox.Text)
         $summary=($items|ForEach-Object {$_.Json}) -join ([Environment]::NewLine+[Environment]::NewLine)
@@ -83,7 +84,7 @@ $batchStart.Add_Click({
         [IO.File]::WriteAllText($script:batchReport,('VIREX BATCH VALIDATION | '+[DateTime]::Now.ToString('o')+[Environment]::NewLine),(New-Object Text.UTF8Encoding($false)))
         $script:batchItems=$items;$script:batchIndex=0;$script:batchStop=$false;$script:batchCurrent=$false
         $script:batchActive=$true;$script:batchWaiting=$true
-        $batchStart.Enabled=$false;$batchCancel.Enabled=$true;$batchBox.Enabled=$false;$batchFolder.Enabled=$true
+        $batchStart.Enabled=$false;$batchCancel.Enabled=$true;$batchBox.Enabled=$false;$batchFolder.Enabled=$true;$runButton.Enabled=$false
         $batchStatus.Text='QUEUED | '+$items.Count+' profiles'
     }catch{$batchStatus.Text=$_.Exception.Message}
 })
@@ -99,7 +100,9 @@ $batchFolder.Add_Click({
 $batchTimer=New-Object Windows.Forms.Timer
 $batchTimer.Interval=500
 $batchTimer.Add_Tick({
-    if(!$script:batchActive -or !$script:batchWaiting -or (Test-StorageBusy)){return}
+    if(!$script:batchActive -or !$script:batchWaiting){return}
+    if($script:unsafeState){Finish-StudioBatch 'RUNNER_ERROR';return}
+    if(Test-StorageBusy){return}
     $script:batchWaiting=$false
     if($script:batchStop){Finish-StudioBatch 'CANCELLED';return}
     try{
