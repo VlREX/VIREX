@@ -548,11 +548,25 @@ function Get-ManualTestArgs([string]$crate,[string]$test,[bool]$serial,[string]$
 function Get-CrashPackage([string]$output,[string]$errors,$exitCode) {
     $combined=$output+[Environment]::NewLine+$errors
     if($exitCode -ne -1073741819 -and $combined -notmatch '(?i)0xc0000005|STATUS_ACCESS_VIOLATION'){return $null}
-    $matchesFound=[regex]::Matches($combined,'(?m)^error: test failed, to rerun pass .-p ([A-Za-z0-9][A-Za-z0-9_-]{0,99}) --lib.\s*$')
-    if($matchesFound.Count -eq 0){return $null}
-    $packages=@($matchesFound | ForEach-Object {$_.Groups[1].Value} | Select-Object -Unique)
-    if($packages.Count -ne 1){return $null}
-    return $packages[0]
+    # Cargo omits -p for a default/single-package library. Accept only one
+    # unambiguous rerun hint; never execute text taken from a log.
+    $hints=@([regex]::Matches($combined,'(?m)^error: test failed, to rerun pass [\x60]([^\r\n\x60]+)[\x60][ \t\r]*$') | ForEach-Object {$_.Groups[1].Value} | Select-Object -Unique)
+    if($hints.Count -ne 1){return $null}
+    if($hints[0] -ceq '--lib'){return '<default-lib>'}
+    if($hints[0] -cmatch '^-p ([A-Za-z0-9][A-Za-z0-9_-]{0,99}) --lib$'){return $Matches[1]}
+    return $null
+}
+function Get-CrashTestArgs([string]$package,[string]$test,[string]$lock) {
+    if($package -ne '<default-lib>'){return Get-ManualTestArgs $package $test $true $lock}
+    if($test -and ($test.Length -gt 300 -or $test -cnotmatch '^[A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)*$')){throw 'Invalid exact diagnostic test.'}
+    if($test){return "test --lib$lock $test -- --exact --nocapture --test-threads=1"}
+    return "test --lib$lock -- --nocapture --test-threads=1"
+}
+function Get-CrashExecutable([string]$errors) {
+    $found=[regex]::Matches($errors,"(?im)process didn't exit successfully:[^\r\n]*[\\/]([A-Za-z0-9_-]+-[a-f0-9]{8,64}\.exe)(?=\s)")
+    $names=@($found | ForEach-Object {$_.Groups[1].Value} | Select-Object -Unique)
+    if($names.Count -eq 1){return $names[0]}
+    return ''
 }
 function Get-SerialCrashCandidate([string]$output) {
     $found=[regex]::Matches($output,'(?m)^test ([A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)*) \.\.\. ')
@@ -572,6 +586,7 @@ function Start-CrashDiagnostics($step,[string]$out,[string]$err) {
     # Preserve evidence and original FAIL before any retry.
     Write-AutoCheckpoint 3 'FAIL'
     $script:machine.CrashPackage=$package
+    $script:machine.CrashExecutable=Get-CrashExecutable $err
     $script:machine.CrashOriginalExit=$step.Exit
     $script:machine.CrashResult='PENDING'
     $script:diagnosticActive=$true
@@ -582,16 +597,16 @@ function Start-CrashDiagnostics($step,[string]$out,[string]$err) {
         Copy-Item -LiteralPath (Join-Path $runDir 'REPORT.txt') -Destination (Join-Path $runDir 'ORIGINAL-FAIL.txt')
     }finally{$script:runState='RUNNING'}
     $lock=if(Test-Path -LiteralPath (Join-Path $workDir 'Cargo.lock') -PathType Leaf){' --locked'}else{''}
-    Add-Step "D1 | Serial crash isolation: $package" $workspaceCargo (Get-ManualTestArgs $package '' $true $lock) 'diagserial'
+    Add-Step "D1 | Serial crash isolation: $package" $workspaceCargo (Get-CrashTestArgs $package '' $lock) 'diagserial'
     $progress.Maximum=$steps.Count+$queue.Count
     Add-Log ("Original FAIL preserved; diagnostic retry of "+$package+[Environment]::NewLine) $cyan
     return $true
 }
 function Add-CrashEventStep {
     # Fixed local read-only Windows event query; no registry changes or dumps.
-    $exeName=$script:machine.CrashPackage.Replace('-','_')
+    $exeName=if($script:machine.CrashExecutable){[regex]::Escape($script:machine.CrashExecutable)}elseif($script:machine.CrashPackage -ne '<default-lib>'){[regex]::Escape($script:machine.CrashPackage.Replace('-','_'))+'-[a-f0-9]+\.exe'}else{'(?!)'}
     $since=$script:started.ToUniversalTime().ToString('o')
-    $command='$ErrorActionPreference="Stop"; try { $events=@(Get-WinEvent -FilterHashtable @{LogName="Application";Id=1000;StartTime=[datetime]::Parse("'+$since+'").ToLocalTime()} -MaxEvents 50 -ErrorAction Stop | Where-Object {$_.ProviderName -eq "Application Error" -and $_.Message -match "(?i)'+$exeName+'-[a-f0-9]+\.exe"}); if(!$events.Count){"No matching crash event found."}else{foreach($event in $events){$event.TimeCreated.ToString("o"); $event.Message}} } catch {"Crash event unavailable: "+$_.Exception.Message}'
+    $command='$ErrorActionPreference="Stop"; try { $events=@(Get-WinEvent -FilterHashtable @{LogName="Application";Id=1000;StartTime=[datetime]::Parse("'+$since+'").ToLocalTime()} -MaxEvents 50 -ErrorAction Stop | Where-Object {$_.ProviderName -eq "Application Error" -and $_.Message -match "(?i)'+$exeName+'"}); if(!$events.Count){"No matching crash event found."}else{foreach($event in $events){$event.TimeCreated.ToString("o"); $event.Message}} } catch {"Crash event unavailable: "+$_.Exception.Message}'
     $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     Add-Step 'D3 | Windows Application Error evidence' (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') "-NoProfile -NonInteractive -EncodedCommand $encoded" 'diagevent'
 }
@@ -603,7 +618,7 @@ function Complete-CrashStep($step,[string]$out,[string]$err,[bool]$valid) {
             if($candidate){
                 $script:machine.CrashCandidate=$candidate
                 $lock=if(Test-Path -LiteralPath (Join-Path $workDir 'Cargo.lock') -PathType Leaf){' --locked'}else{''}
-                Add-Step "D2 | Exact candidate: $candidate" $workspaceCargo (Get-ManualTestArgs $script:machine.CrashPackage $candidate $true $lock) 'diagexact'
+                Add-Step "D2 | Exact candidate: $candidate" $workspaceCargo (Get-CrashTestArgs $script:machine.CrashPackage $candidate $lock) 'diagexact'
             }
         }
         Add-CrashEventStep
